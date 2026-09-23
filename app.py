@@ -83,7 +83,7 @@ async def lifespan(app: FastAPI):
 
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(lifespan=lifespan, root_path="/bot_app", docs_url=None, redoc_url=None, openapi_url=None)
 # app.include_router(router)
 # app.post("/send-photo", tags=["Payments"])(send_photo_payment)
 app.include_router(payment_router)
