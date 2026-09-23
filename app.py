@@ -167,7 +167,7 @@ def get_open_api_endpoint():
 @app.get("/docs", include_in_schema=True)
 def get_documentation():
     return get_swagger_ui_html(
-        openapi_url="/openapi.json",
+        openapi_url="openapi.json",
         title="Docs"
     )
 
