@@ -70,3 +70,4 @@ AUTH_KEY: str = env.str("AUTH_KEY")
 WHITE_IPS: list[str] = env.list("WHITE_IPS", default=[])
 
 PORT: int = env.int("PORT", default=8080)
+HOST: str = env.str("HOST", default="localhost")

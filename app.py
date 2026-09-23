@@ -503,4 +503,4 @@ async def ping_endpoint():
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="localhost", port=config.PORT, reload=True, log_level="warning")
+    uvicorn.run("app:app", host=config.HOST, port=config.PORT, reload=True, log_level="warning")
