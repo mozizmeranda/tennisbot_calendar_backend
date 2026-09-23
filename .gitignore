@@ -1,0 +1,36 @@
+# === Секреты и ключи доступа (КРИТИЧЕСКОЕ) ===
+.env
+credentials.json
+google/credentials.json
+
+# === Базы данных SQLite ===
+database/users.db
+database/schema.sql
+telegram_bot/fsm_storage.db
+*.db-journal
+*.db-wal
+
+# === Кэш Python (компилированные файлы) ===
+**/__pycache__/
+*.pyc
+
+# === Настройки IDE PyCharm (не нужны в репозитории) ===
+.idea/
+
+# === Виртуальное окружение ===
+venv/
+.venv/
+env/
+
+# === Тесты и логи ===
+.pytest_cache/
+logs/
+
+# === Исключения специфичных файлов ===
+calendar_api/front_instructions.txt
+front_instruction.txt
+google/migrate.py
+telegram_bot/fsm_storage.db
+database/test_users.db
+
+.gitignore

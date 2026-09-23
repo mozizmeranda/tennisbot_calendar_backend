@@ -1,0 +1,5 @@
+# Зависимости для скрипта миграции Google Calendar → SQLite
+google-api-python-client
+google-auth
+google-auth-httplib2
+aiosqlite
