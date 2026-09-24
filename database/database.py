@@ -952,6 +952,18 @@ class Database:
             logger.exception("get_single_event failed: event_id=%s", event_id)
             return None
 
+    @serialized_transaction
+    async def update_single_event(self, event_id: int, start_datetime: str, end_datetime: str, title: Optional[str] = None):
+        if title:
+            sql = "UPDATE single_events SET start_datetime=?, end_datetime=?, title=? WHERE id=?"
+            params = (start_datetime, end_datetime, title, event_id)
+        else:
+            sql = "UPDATE single_events SET start_datetime=?, end_datetime=? WHERE id=?"
+            params = (start_datetime, end_datetime, event_id)
+            
+        await self.execute(sql, parameters=params, commit=True)
+        return await self.get_single_event(event_id)
+
     async def get_single_events_for_calendar(
             self,
             calendar_id: str,
