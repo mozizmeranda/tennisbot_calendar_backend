@@ -395,7 +395,7 @@ async def get_full_price_handler(body: models.GetFullPriceBody):
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={
-                "temprary_order_id": temporary_order_id,
+                "temporary_order_id": temporary_order_id,
                 "location": location,
                 "time_slot": summary_time_slot,
                 "price": total_price

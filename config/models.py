@@ -40,3 +40,8 @@ class PerformBookingBody(BaseModel):
     booking_id: str = Field(..., description="ID брони (temporary_order_id), которую нужно подтвердить")
     number: str
 
+
+class UpdateProfileBody(BaseModel):
+    name: Optional[str] = Field(None, description="Новое имя пользователя")
+    phone: Optional[str] = Field(None, description="Новый номер телефона")
+

@@ -135,6 +135,24 @@ class Database:
         params = (telegram_id,)
         return await self.execute(sql, parameters=params, fetchall=True)
 
+    @serialized_transaction
+    async def update_user_profile(self, telegram_id: int, name: Optional[str] = None, number: Optional[str] = None):
+        updates = []
+        params = []
+        if name is not None:
+            updates.append("name=?")
+            params.append(name)
+        if number is not None:
+            updates.append("number=?")
+            params.append(number)
+            
+        if not updates:
+            return
+            
+        sql = f"UPDATE users SET {', '.join(updates)} WHERE id=?"
+        params.append(telegram_id)
+        await self.execute(sql, parameters=tuple(params), commit=True)
+
     async def get_full_profile(self, telegram_id: int) -> List[tuple]:
         sql = """
            SELECT 
