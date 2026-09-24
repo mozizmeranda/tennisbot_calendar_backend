@@ -36,7 +36,7 @@ async def notify_admin(func_name: str, error: str, arguments=None):
     try:
         url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
         text = (f"Func name:\n ```{func_name}``` \n\nError:\n ```{error}```  \n "
-                f"Arguments:\n ```{arguments.items() if arguments else "Nothing"}```\n")
+                f"Arguments:\n ```{arguments.items() if arguments else 0}```\n")
         response = await get_http_client().post(
             url,
             data={
@@ -58,6 +58,3 @@ alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 
 def nanoid_generate():
     return generate(alphabet, 8)
-
-
-
