@@ -83,9 +83,8 @@ async def lifespan(app: FastAPI):
 
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(lifespan=lifespan, root_path="/bot_app", docs_url=None, redoc_url=None, openapi_url=None)
-# app.include_router(router)
-# app.post("/send-photo", tags=["Payments"])(send_photo_payment)
+app = FastAPI(lifespan=lifespan, root_path=config.ROOT_PATH, docs_url=None, redoc_url=None, openapi_url=None)
+
 app.include_router(payment_router)
 app.include_router(profile_router)
 app.include_router(bot_router)
@@ -159,15 +158,27 @@ def check_admin(credentials: HTTPBasicCredentials = Depends(security)):
 
 # OpenAPI спецификация (учитывает root_path автоматически)
 @app.get("/openapi.json", include_in_schema=True)
-def get_open_api_endpoint():
-    return app.openapi()
+def get_open_api_endpoint(request: Request):
+    schema = app.openapi()
+    root_path = request.scope.get("root_path", "")
+    
+    # Сервер прописываем в схему ТОЛЬКО если префикс реально существует
+    if root_path:
+        schema["servers"] = [{"url": root_path}]
+        
+    return schema
 
 
 # Страница Swagger UI (передаем относительный путь к openapi.json)
 @app.get("/docs", include_in_schema=True)
-def get_documentation():
+def get_documentation(request: Request):
+    root_path = request.scope.get("root_path", "")
+    
+    # Динамически формируем путь к openapi.json
+    openapi_url = f"{root_path}/openapi.json" if root_path else "/openapi.json"
+    
     return get_swagger_ui_html(
-        openapi_url="openapi.json",
+        openapi_url=openapi_url,
         title="Docs"
     )
 

@@ -71,3 +71,7 @@ WHITE_IPS: list[str] = env.list("WHITE_IPS", default=[])
 
 PORT: int = env.int("PORT", default=8080)
 HOST: str = env.str("HOST", default="localhost")
+
+
+ROOT_PATH: str = env.str("ROOT_PATH", default="")
+
