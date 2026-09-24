@@ -203,6 +203,10 @@ async def migrate_calendar(service, conn, g_cal: str, db_cal: str, dry_run: bool
 
     today_str = date.today().isoformat() + " 00:00:00"
 
+    # Получаем max_events_per_hour для этого календаря
+    cur = await conn.execute("SELECT max_events_per_hour FROM calendars WHERE id=?", (db_cal,))
+    row = await cur.fetchone()
+    max_events = row[0] if row else 1
     # ── Очистка данных с сегодняшнего дня для идемпотентности ──
     if not dry_run:
         await conn.execute(
@@ -302,7 +306,7 @@ async def migrate_calendar(service, conn, g_cal: str, db_cal: str, dry_run: bool
     # ══════════════════════════════════════════════════════════════════════
     # ШАГ 4: Обработка развёрнутых экземпляров → single_events
     # ══════════════════════════════════════════════════════════════════════
-    occupied: set[str] = set()
+    occupied_counts: dict[str, int] = {}
 
     for ev in expanded_events:
         parent_id = ev.get("recurringEventId")
@@ -391,10 +395,11 @@ async def migrate_calendar(service, conn, g_cal: str, db_cal: str, dry_run: bool
                 s_str = inst_s.strftime("%Y-%m-%d %H:%M:%S")
                 e_str = inst_e.strftime("%Y-%m-%d %H:%M:%S")
 
-                if s_str not in occupied:
+                count = occupied_counts.get(s_str, 0)
+                if count < max_events:
                     await db_single(conn, db_cal, title, s_str, e_str,
                                     "confirmed", None, created_by, dry_run)
-                    occupied.add(s_str)
+                    occupied_counts[s_str] = count + 1
                     stats["modified"] += 1
                     logger.info("  [Замена]    '%s'→'%s' | %s",
                                 info["title"], title, s_str[:16])
@@ -404,10 +409,11 @@ async def migrate_calendar(service, conn, g_cal: str, db_cal: str, dry_run: bool
                 # Шаблон серии не создавался (не-weekly или пропущена) → переносим как одиночное
                 s_str = inst_s.strftime("%Y-%m-%d %H:%M:%S")
                 e_str = inst_e.strftime("%Y-%m-%d %H:%M:%S")
-                if s_str not in occupied:
+                count = occupied_counts.get(s_str, 0)
+                if count < max_events:
                     await db_single(conn, db_cal, title, s_str, e_str,
                                     "confirmed", None, created_by, dry_run)
-                    occupied.add(s_str)
+                    occupied_counts[s_str] = count + 1
                     stats["single"] += 1
                     logger.info("  [Разовое*]  %s | %s", title, s_str[:16])
                 else:
@@ -427,15 +433,16 @@ async def migrate_calendar(service, conn, g_cal: str, db_cal: str, dry_run: bool
             e_str = edt.strftime(
                 "%Y-%m-%d 23:59:59" if allday else "%Y-%m-%d %H:%M:%S")
 
-            if s_str not in occupied:
+            count = occupied_counts.get(s_str, 0)
+            if count < max_events:
                 await db_single(conn, db_cal, title, s_str, e_str,
                                 "confirmed", None, created_by, dry_run)
-                occupied.add(s_str)
+                occupied_counts[s_str] = count + 1
                 stats["single"] += 1
                 logger.info("  [Разовое]   %s | %s", title, s_str[:16])
             else:
                 stats["skipped_dup"] += 1
-                logger.info("  [Дубль]     %s | %s — пропуск", title, s_str[:16])
+                logger.info("  [Лимит слота] %s | %s — пропуск (уже %d/%d)", title, s_str[:16], count, max_events)
 
 
 async def run_google_migration(

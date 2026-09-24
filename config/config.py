@@ -36,6 +36,7 @@ logging.basicConfig(
 # 4. Telegram & Admin
 ADMIN_ID: int = env.int("ADMIN_ID", default=0)
 TELEGRAM_TOKEN: str = env.str("TELEGRAM_TOKEN", default="")
+ADMIN_BOT_TOKEN: str = env.str("ADMIN_BOT_TOKEN", default="")
 WEBHOOK_URL: str = env.str("WEBHOOK_URL")
 WEBHOOK_SECRET: str = env.str("WEBHOOK_SECRET")
 
@@ -74,4 +75,5 @@ HOST: str = env.str("HOST", default="localhost")
 
 
 ROOT_PATH: str = env.str("ROOT_PATH", default="")
+
 
