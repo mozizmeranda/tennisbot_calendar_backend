@@ -234,7 +234,7 @@ class Database:
         params = (location, day, time_slot)
         data = await self.execute(sql, parameters=params, fetchone=True)
 
-        sql2 = "SELECT COUNT(*) FROM pending_bookings WHERE location=? AND day=? AND time_slots=?"
+        sql2 = "SELECT COUNT(*) FROM pending_bookings WHERE location=? AND booking_date=? AND time_slots=?"
         params2 = (location, day, time_slot)
         data2 = await self.execute(sql2, parameters=params2, fetchone=True)
 
@@ -338,7 +338,7 @@ class Database:
 
             # 2. pending_bookings (старый механизм)
             res_bookings = await self.execute(
-                "SELECT COUNT(*) FROM pending_bookings WHERE location = ? AND day = ? AND time_slots = ?",
+                "SELECT COUNT(*) FROM pending_bookings WHERE location = ? AND booking_date = ? AND time_slots = ?",
                 (location, booking_date, time_slot),
                 fetchone=True,
             )
@@ -399,7 +399,7 @@ class Database:
 
     @serialized_transaction
     async def create_pending_booking(self, booking_id: str, location: str, day: str, time_slot: str, telegram_id: int):
-        sql = "INSERT INTO pending_bookings(booking_id, location, day, time_slots, telegram_ID) VALUES (?, ?, ?, ?, ?)"
+        sql = "INSERT INTO pending_bookings(booking_id, location, booking_date, time_slots, telegram_ID) VALUES (?, ?, ?, ?, ?)"
         params = (booking_id, location, day, time_slot, telegram_id)
         await self.execute(sql, parameters=params, commit=True)
 
@@ -601,7 +601,8 @@ class Database:
 
         grid = _build_grid(active, cancelled_pairs, recurring, target_date, target_date)
 
-        max_quantity = await self.execute("SELECT max_events_per_hour FROM calendars WHERE id=?", (calendar_id,), fetchone=True)[0]
+        row = await self.execute("SELECT max_events_per_hour FROM calendars WHERE id=?", (calendar_id,), fetchone=True)
+        max_quantity = row[0] if row else 1
 
         return {
             "max_quantity": max_quantity,
@@ -782,15 +783,13 @@ class Database:
         booking_date: str,
         time_slot: str,
         screenshot_path: str = "",
-        price: float = 0.0,
-        name: str = "",
-        number: str = ""
+        price: float = 0.0
     ):
         sql = """
-        INSERT OR IGNORE INTO bookings (telegram_id, location, booking_date, time_slot, screenshot_path, price, name, number)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO bookings (telegram_id, location, booking_date, time_slot, screenshot_path, price)
+        VALUES (?, ?, ?, ?, ?, ?)
         """
-        params = (telegram_id, location, booking_date, time_slot, screenshot_path, price, name, number)
+        params = (telegram_id, location, booking_date, time_slot, screenshot_path, price)
         await self.execute(sql, parameters=params, commit=True)
 
 
@@ -967,17 +966,38 @@ class Database:
                 params = (calendar_id, from_dt, to_dt)
 
             lst = []
-            pending_table_sql = "SELECT * FROM pending_table WHERE booking_date BETWEEN ? AND ? AND location = ?"
-            pendinds_params = (from_dt[:10], to_dt[:10], calendar_id)
-            pendings = await self.execute(pending_table_sql, parameters=pendinds_params, fetchall=True)
-            if pendings:
-                for pending in pendings:
+            pending_table_sql = "SELECT * FROM pending_table WHERE booking_date BETWEEN ? AND ? AND location = ? AND expires_at > ?"
+            pendinds_params = (from_dt[:10], to_dt[:10], calendar_id, datetime.now())
+            pending_table = await self.execute(pending_table_sql, parameters=pendinds_params, fetchall=True)
+
+            pending_bookings_sql = "SELECT * FROM pending_bookings WHERE booking_date BETWEEN ? AND ? AND location = ?"
+            pending_bookings_params = (from_dt[:10], to_dt[:10], calendar_id)
+            pending_bookings = await self.execute(pending_bookings_sql, parameters=pending_bookings_params, fetchall=True)
+
+            if pending_table:
+                for pending in pending_table:
                     lst.append(
                         {
                             "id": pending[0],
                             "calendar_id": calendar_id,
                             "created_by": 0,
-                            "title": "Кто-то думает бронироват или нет....",
+                            "title": "Кто-то думает бронировать или нет....",
+                            "start_datetime": f"{pending[2]} {pending[3][:5]}:00",
+                            "end_datetime": f"{pending[2]} {pending[3][6:]}:00",
+                            "status": "pending",
+                            "recurring_event_id": 0,
+                            "created_at": 0,
+                        }
+                    )
+
+            if pending_bookings:
+                for pending in pending_bookings:
+                    lst.append(
+                        {
+                            "id": pending[0],
+                            "calendar_id": calendar_id,
+                            "created_by": 0,
+                            "title": f"{pending[0]} ждет подтверждения от админа",
                             "start_datetime": f"{pending[2]} {pending[3][:5]}:00",
                             "end_datetime": f"{pending[2]} {pending[3][6:]}:00",
                             "status": "pending",

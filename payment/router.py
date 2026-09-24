@@ -39,6 +39,7 @@ async def send_photo_payment(
     loc = location_id or location
     if not loc:
         raise HTTPException(status_code=400, detail="Missing location")
+    location_name = await db.execute("SELECT name FROM calendars WHERE id = ?", (loc,), fetchone=True)
  
     if not booking_id:
         raise HTTPException(status_code=400, detail="Missing booking id")
@@ -68,7 +69,7 @@ async def send_photo_payment(
             f"📋 <b>ID</b> #{user_id}\n"
             f"👤 <b>Имя</b>: {name}\n"
             f"📞 <b>Номер</b>: {phone}\n"
-            f"📍 <b>Локация</b>: {loc}\n"
+            f"📍 <b>Локация</b>: {location_name[0]}\n"
             f"📅 <b>Дата</b>: {date}\n"
             f"⏰ Слот: {parsed_slots}\n"
             f"Цена: {price or 'Не указана'}"
@@ -96,6 +97,7 @@ async def send_photo_payment(
         )
 
         logger.info("Pending booking created and photo sent to admin for booking_id=%s", booking_id)
+        await db.execute("DELETE FROM pending_table WHERE temporary_order_id=?", (booking_id, ), commit=True)
         return {"success": True, "message": "Фото принято и обрабатывается"}
 
     except Exception as e:

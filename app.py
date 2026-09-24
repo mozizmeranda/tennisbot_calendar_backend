@@ -467,7 +467,7 @@ async def perform_booking_endpoint(body: models.PerformBookingBody = Body(...)):
                 # Создаем событие в календаре
                 await db.create_single_event(
                     calendar_id=location,
-                    created_by=0,
+                    created_by=None,
                     title=title,
                     start_datetime=start_dt,
                     end_datetime=end_dt,
@@ -482,8 +482,6 @@ async def perform_booking_endpoint(body: models.PerformBookingBody = Body(...)):
                 time_slot=slot_time,
                 screenshot_path="",  # Нет скриншота, так как авто-оплата
                 price=await db.get_price(location, slot_time) or 0.0,
-                name="Play On",
-                number=body.number
             )
             
         # 4. Удаляем из pending_table
