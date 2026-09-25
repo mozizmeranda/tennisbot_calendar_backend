@@ -307,7 +307,27 @@ class Database:
                 )
                 n_single_events = res_single[0] if res_single else 0
 
-            total_occupied = n_pending_table + n_pending_bookings + n_single_events
+                # 4. Повторяющиеся брони из календаря (recurring_events)
+                day_of_week = datetime.strptime(booking_date, "%Y-%m-%d").weekday()
+                start_time_str = f"{start_str}:00"
+                res_recurring = await self.execute(
+                    """
+                    SELECT COUNT(*) FROM recurring_events re
+                    WHERE re.calendar_id = ? 
+                      AND re.day_of_week = ? 
+                      AND re.start_time = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM cancelled_recurring_instances cri 
+                          WHERE cri.recurring_event_id = re.id 
+                            AND cri.cancel_date = ?
+                      )
+                    """,
+                    (calendar_id, day_of_week, start_time_str, booking_date),
+                    fetchone=True,
+                )
+                n_recurring_events = res_recurring[0] if res_recurring else 0
+
+            total_occupied = n_pending_table + n_pending_bookings + n_single_events + n_recurring_events
 
             if total_occupied >= max_capacity:
                 await self.connection.rollback()
