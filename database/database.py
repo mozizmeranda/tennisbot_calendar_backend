@@ -815,23 +815,26 @@ class Database:
                     )
 
             rows = await self.execute(sql, parameters=params, fetchall=True)
-            if not rows:
-                return []
-            return_rows = [
-                {
-                    "id": r[0],
-                    "calendar_id": r[1],
-                    "created_by": r[2],
-                    "title": r[3],
-                    "start_datetime": r[4],
-                    "end_datetime": r[5],
-                    "status": r[6],
-                    "recurring_event_id": r[7],
-                    "created_at": r[8],
-                }
-                for r in rows
-            ]
+            return_rows = []
+            if rows:
+                return_rows = [
+                    {
+                        "id": r[0],
+                        "calendar_id": r[1],
+                        "created_by": r[2],
+                        "title": r[3],
+                        "start_datetime": r[4],
+                        "end_datetime": r[5],
+                        "status": r[6],
+                        "recurring_event_id": r[7],
+                        "created_at": r[8],
+                    }
+                    for r in rows
+                ]
+            
             final = return_rows + lst
+            if not final:
+                return []
             return sorted(final, key=lambda x: x["start_datetime"])
         except Exception:
             logger.exception("get_single_events_for_calendar failed: calendar_id=%s", calendar_id)
