@@ -69,7 +69,7 @@ async def send_photo_payment(
             f"📋 <b>ID</b> #{user_id}\n"
             f"👤 <b>Имя</b>: {name}\n"
             f"📞 <b>Номер</b>: {phone}\n"
-            f"📍 <b>Локация</b>: {location_name[0]}\n"
+        f"📍 <b>Локация</b>: {location_name[0] if location_name else loc}\n"
             f"📅 <b>Дата</b>: {date}\n"
             f"⏰ Слот: {parsed_slots}\n"
             f"Цена: {price or 'Не указана'}"

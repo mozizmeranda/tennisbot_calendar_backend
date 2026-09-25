@@ -2,15 +2,13 @@
 import aiosqlite
 import os
 from typing import Optional, List, Tuple, Any
-import time
 import asyncio
-import ast
 import logging
 from datetime import datetime
 from functools import wraps
 import traceback
 from utils import notify_admin
-from config.config import TIMEOUT_MS, courts
+from config.config import courts
 from datetime import date as date_type
 from calendar_api.grid_utils import _build_cancelled_pairs, _build_grid
 
@@ -169,83 +167,7 @@ class Database:
         params = (telegram_id,)
         return await self.execute(sql, parameters=params, fetchall=True)
 
-    async def get_profile_info(self, telegram_id: int):
-        try:
-            user_info_sql = "SELECT name, number FROM users WHERE id=?"
-            params = (telegram_id, )
-            data = await self.execute(sql=user_info_sql, parameters=params, fetchone=True)
 
-            if not data or not data[0] or not data[1]:
-                return -1
-
-            invoices_sql = """
-                SELECT 
-                    COUNT(CASE WHEN status IN ('pending', 'waiting_for_payment') THEN 1 END) AS pendings,
-                    COUNT(CASE WHEN status IN ('paid', 'cancelled') THEN 1 END) AS finished
-                FROM orders 
-                WHERE user_id = ?;
-                """
-            row = await self.execute(invoices_sql, parameters=params, fetchone=True)
-
-            # Если запись найдена — раскладываем кортеж, иначе отдаем 0
-            pendings_count = row[0] if row else 0
-            finished_count = row[1] if row else 0
-
-            return {
-                "name": data[0],
-                "number": data[1],
-                "pendings": pendings_count,
-                "finished": finished_count
-            }
-
-        except Exception as exp:
-            logger.exception("%s: %s", exp, telegram_id)
-            await notify_admin(self.get_profile_info.__name__, str(traceback.format_exc()),
-                               arguments={"telegram_id": telegram_id})
-            return -1
-
-    async def invoices(self, telegram_id: int, invoice_type: str):
-        try:
-            types = 'pending'
-            if invoice_type == "pendings":
-                types = "'pending'"
-            if invoice_type == "paids_cancels":
-                types = "'paid', 'cancelled'"
-
-            sql = f"SELECT * FROM orders WHERE user_id=? AND status IN ({types})"
-            data = await self.execute(sql, (telegram_id,), fetchall=True)
-            if not data:
-                return -1
-            result = []
-            for item in data:
-                if item[8] - int(time.time() * 1000) > TIMEOUT_MS:  # пропускаем те, у кого истек timeout
-                    continue
-                result.append(
-                    {
-                        "order_id": item[0],
-                        "price": int(item[2])/100,  # так как записывается в тийин сразу, поэтому и делим на 100
-                        "location": item[5],
-                        "booking_date": item[6],
-                        "time_slots": ast.literal_eval(item[7])
-                    }
-                )
-
-            if not result:
-                return -1
-
-            return result
-
-        except Exception as exp:
-            await notify_admin(func_name="pending_invoices", error=str(traceback.format_exc()),
-                               arguments={"telegram_id": telegram_id})
-            print(exp)
-            return -1
-
-    @serialized_transaction
-    async def create_pending_rent(self, location: str, day: str, time_slot: str):
-        sql = "INSERT INTO pending_table(location, booking_date, time_slot) VALUES (?, ?, ?)"
-        params = (location, day, time_slot)
-        await self.execute(sql, parameters=params, commit=True)
 
     async def pendings(self, location: str, day: str, time_slot: str) -> int:
         sql = "SELECT COUNT(*) FROM pending_table WHERE location=? AND booking_date=? AND time_slot=?"
@@ -412,9 +334,6 @@ class Database:
                 "Error while creating pending: telegram_id=%s, temporary_order_id=%s, exp=%s",
                 telegram_id, temporary_order_id, exp,
             )
-            return 0
-
-
     @serialized_transaction
     async def create_pending_booking(self, booking_id: str, location: str, day: str, time_slot: str, telegram_id: int):
         sql = "INSERT INTO pending_bookings(booking_id, location, booking_date, time_slots, telegram_ID) VALUES (?, ?, ?, ?, ?)"
@@ -439,155 +358,8 @@ class Database:
         params = (telegram_id, message_id, chat_id)
         await self.execute(sql, parameters=params, commit=True)
 
-    async def admin_stats(self, today: str, start_date: str, end_date: str) -> Optional[tuple]:
-        sql = """
-        SELECT
-            COALESCE(SUM(CASE 
-                WHEN booking_date >= ? AND booking_date < ? 
-                THEN price 
-                ELSE 0 
-            END), 0) AS period_sum,
-
-            COUNT(CASE 
-                WHEN booking_date = ? 
-                THEN 1 
-            END) AS today_count
-        FROM bookings;
-        """
-        # Исправлено: привязали параметры к переменным (в вашем SQL-шаблоне были зашиты жесткие даты)
-        params = (start_date, end_date, today)
-        return await self.execute(sql, parameters=params, fetchone=True)
-
-    async def get_tournaments(self) -> List[tuple]:
-        sql = "SELECT id, title, date_time FROM tournaments;"
-        return await self.execute(sql, fetchall=True)
-
-    async def get_tournament(self, tournament_id: int) -> Optional[tuple]:
-        sql = "SELECT * FROM tournaments WHERE id=?;"
-        params = (tournament_id,)
-        return await self.execute(sql, parameters=params, fetchone=True)
-
-    async def get_order_price(self, order_id: str):
-        sql = "SELECT amount, created_at FROM orders WHERE order_id=?"
-        data = await self.execute(sql, (order_id,), fetchone=True)
-        if not data:
-            return -1
-
-        if (time.time() * 1000) - data[1] > TIMEOUT_MS:
-            await self.execute("UPDATE orders SET status = ?, "
-                               "updated_at = strftime('%s', 'now') * 1000 WHERE order_id = ?", ("cancelled",),
-                               commit=True)
-            return -2
-
-        return data[0]
-
-    # ──────────────────────────────────────────────────────────────────────────
-    #  PAYME INTEGRATION
-    # ──────────────────────────────────────────────────────────────────────────
-
-    async def get_order_by_id(self, order_id: int) -> Optional[dict]:
-        """Вернуть заказ по id или None если не найден."""
-        row = await self.execute(
-            "SELECT order_id, amount, status FROM orders WHERE order_id = ?",
-            (order_id,),
-            fetchone=True,
-        )
-        if not row:
-            return None
-        return {"id": row[0], "amount": row[1], "status": row[2]}
-
-    async def data_after_perform(self, order_id: int):
-        """Вернуть заказ по id или None если не найден."""
-
-        row = await self.execute(
-            "SELECT order_id, user_id, amount, location, booking_date, time_slots FROM orders WHERE order_id = ?",
-            (order_id,),
-            fetchone=True,
-        )
-        if not row:
-            return None
-
-        lang = await self.get_lang(row[1])
-        if not lang:
-            lang = "ru"
-
-        return {"id": row[0], "chat_id": row[1], "amount": row[2], "location": row[3],
-                "booking_date": row[4], "time_slots": row[5], "lang": lang}
-
-    # ──────────────────────────────────────────
-    #  PAYME TRANSACTIONS
-    # ──────────────────────────────────────────
-    @serialized_transaction
-    async def create_order(self, order_id: str, user_id: int, amount: int):
-        """amount в тийинах"""
-        try:
-            data = await self.execute("SELECT * FROM pending_table WHERE temporary_order_id=?",
-                                      (order_id,), fetchall=True)
-            if not data:
-                return ""
-
-            location = data[0][1]
-            booking_date = data[0][2]
-            time_slots = []
-            for record in data:
-                time_slots.append(record[3])
-
-            await self.execute(
-                """INSERT INTO orders (order_id, user_id, amount, location, booking_date, time_slots)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (order_id, user_id, amount, location, booking_date, str(time_slots)),
-                commit=True,
-            )
-            return order_id
-
-        except aiosqlite.IntegrityError:
-            return 0
-
-        except Exception as exp:
-            logger.exception("create_order, exp: %s, order_id: %s, user_id: %s", exp, order_id, user_id)
-            await notify_admin(self.create_order.__name__, str(traceback.format_exc()),
-                               {"order_id": order_id})
-            return -1
-
-    async def get_order_status(self, order_id: str):
-        row = await self.execute("SELECT status FROM orders WHERE order_id=?", (order_id,),
-                                 fetchone=True)
-        if not row:
-            return -1
-        return row[0]
-
-    async def get_order(self, order_id: int) -> dict | None:
-        row = await self.execute(
-            """SELECT order_id, user_id, amount, status, description, created_at, updated_at
-               FROM orders WHERE order_id = ?""",
-            (order_id,),
-            fetchone=True,
-        )
-        if not row:
-            return None
-        return {
-            "id": row[0],
-            "user_id": row[1],
-            "amount": row[2],
-            "status": row[3],
-            "description": row[4],
-            "created_at": row[5],
-            "updated_at": row[6],
-        }
-
-    @serialized_transaction
-    async def update_order_status(self, order_id: int, status: str) -> None:
-        await self.execute(
-            """UPDATE orders SET status = ?,
-               updated_at = strftime('%s', 'now') * 1000
-               WHERE order_id = ?""",
-            (status, order_id),
-            commit=True,
-        )
-
-
-
     async def get_booked_slots(self, location: str, date_str: str) -> list:
+
         """
         Возвращает список занятых time_slot для данной локации и даты.
         Учитывает как single_events, так и recurring_events (с учётом отмен).
@@ -964,6 +736,12 @@ class Database:
         await self.execute(sql, parameters=params, commit=True)
         return await self.get_single_event(event_id)
 
+    @serialized_transaction
+    async def delete_single_event(self, event_id: int) -> bool:
+        sql = "DELETE FROM single_events WHERE id=?"
+        await self.execute(sql, parameters=(event_id,), commit=True)
+        return True
+
     async def get_single_events_for_calendar(
             self,
             calendar_id: str,
@@ -997,7 +775,7 @@ class Database:
 
             lst = []
             pending_table_sql = "SELECT * FROM pending_table WHERE booking_date BETWEEN ? AND ? AND location = ? AND expires_at > ?"
-            pendinds_params = (from_dt[:10], to_dt[:10], calendar_id, datetime.now())
+            pendinds_params = (from_dt[:10], to_dt[:10], calendar_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
             pending_table = await self.execute(pending_table_sql, parameters=pendinds_params, fetchall=True)
 
             pending_bookings_sql = "SELECT * FROM pending_bookings WHERE booking_date BETWEEN ? AND ? AND location = ?"
@@ -1257,121 +1035,10 @@ class Database:
             logger.exception("cancel_recurring_instance failed: recurring_event_id=%s", recurring_event_id)
             return None
 
+
     # ──────────────────────────────────────────────────────────────────────────
     #  STATS
     # ──────────────────────────────────────────────────────────────────────────
-
-    async def get_calendar_stats(self, calendar_id: str) -> dict:
-        """Статистика: активные, отменённые, кол-во повторяющихся серий."""
-        try:
-            active_row = await self.execute(
-                "SELECT COUNT(*) FROM single_events WHERE calendar_id=? AND status IN ('confirmed', 'pending_payment')",
-                parameters=(calendar_id,),
-                fetchone=True,
-            )
-            cancelled_row = await self.execute(
-                "SELECT COUNT(*) FROM single_events WHERE calendar_id=? AND status='cancelled'",
-                parameters=(calendar_id,),
-                fetchone=True,
-            )
-            recurring_row = await self.execute(
-                "SELECT COUNT(*) FROM recurring_events WHERE calendar_id=?",
-                parameters=(calendar_id,),
-                fetchone=True,
-            )
-            return {
-                "calendar_id": calendar_id,
-                "active_single_events": active_row[0] if active_row else 0,
-                "cancelled_events": cancelled_row[0] if cancelled_row else 0,
-                "recurring_series": recurring_row[0] if recurring_row else 0,
-            }
-        except Exception:
-            logger.exception("get_calendar_stats failed: calendar_id=%s", calendar_id)
-            return {
-                "calendar_id": calendar_id,
-                "active_single_events": 0,
-                "cancelled_events": 0,
-                "recurring_series": 0,
-            }
-
-    async def get_events_on_date(self, calendar_id: str, target_date: str) -> dict:
-        try:
-            from_dt = f"{target_date} 00:00:00"
-            to_dt = f"{target_date} 23:59:59"
-
-            # Одиночные (confirmed / pending_payment)
-            single_rows = await self.execute(
-                """
-                SELECT id, calendar_id, created_by, title,
-                       start_datetime, end_datetime, status, recurring_event_id, created_at
-                FROM single_events
-                WHERE calendar_id=? AND start_datetime>=? AND end_datetime<=?
-                  AND status IN ('confirmed', 'pending_payment')
-                """,
-                parameters=(calendar_id, from_dt, to_dt),
-                fetchall=True,
-            )
-
-            # Отменённые экземпляры повторяющихся
-            cancelled_rows = await self.execute(
-                """
-                SELECT recurring_event_id FROM single_events
-                WHERE calendar_id=? AND start_datetime>=? AND end_datetime<=?
-                  AND status='cancelled' AND recurring_event_id IS NOT NULL
-                """,
-                parameters=(calendar_id, from_dt, to_dt),
-                fetchall=True,
-            )
-
-            cancelled_ids = {r[0] for r in cancelled_rows} if cancelled_rows else set()
-
-            # Повторяющиеся на нужный день недели (0=Пн, 6=Вс)
-            weekday = datetime.strptime(target_date, "%Y-%m-%d").weekday()
-            recurring_rows = await self.execute(
-                """
-                SELECT id, title, start_time, end_time
-                FROM recurring_events
-                WHERE calendar_id=? AND day_of_week=?
-                """,
-                parameters=(calendar_id, weekday),
-                fetchall=True,
-            )
-
-            recurring_instances = [
-                {
-                    "recurring_event_id": r[0],
-                    "title": r[1],
-                    "start_datetime": f"{target_date} {r[2]}",
-                    "end_datetime": f"{target_date} {r[3]}",
-                    "status": "confirmed",
-                    "type": "recurring_instance",
-                }
-                for r in (recurring_rows or [])
-                if r[0] not in cancelled_ids
-            ]
-
-            return {
-                "date": target_date,
-                "single_events": [
-                    {
-                        "id": r[0],
-                        "calendar_id": r[1],
-                        "created_by": r[2],
-                        "title": r[3],
-                        "start_datetime": r[4],
-                        "end_datetime": r[5],
-                        "status": r[6],
-                        "recurring_event_id": r[7],
-                        "created_at": r[8],
-                    }
-                    for r in (single_rows or [])
-                ],
-                "recurring_instances": recurring_instances,
-            }
-        except Exception:
-            logger.exception("get_events_on_date failed: calendar_id=%s, target_date=%s", calendar_id, target_date)
-            return {"date": target_date, "single_events": [], "recurring_instances": []}
-
 
     async def get_calendar_stats(self, calendar_id: str) -> dict:
         """Статистика: активные, отменённые, кол-во повторяющихся серий."""
