@@ -344,7 +344,6 @@ async def change_language_handler(data: Dict[str, Any] = Body(...)):
 async def get_full_price_handler(body: models.GetFullPriceBody):
     logger.info("[get-full-price] Incoming body: %s", body.model_dump_json(indent=2))
     try:
-        free_courts_quantity = body.free_courts_quantity
         location = body.location
         booking_date = body.day
         telegram_id = body.telegram_id
@@ -355,22 +354,22 @@ async def get_full_price_handler(body: models.GetFullPriceBody):
             
         telegram_id = telegram_id or 0
 
-        first = time_slots[0]
-        last = time_slots[-1]
+        slot_keys = list(time_slots.keys())
+        first = slot_keys[0]
+        last = slot_keys[-1]
         summary_time_slot = f"{first[:5]}-{last[6:]}"
 
-        prices = await db.get_prices_bulk(location, time_slots)
+        prices = await db.get_prices_bulk(location, slot_keys)
         total_price = sum(prices)
 
         expires_at = (datetime.now() + timedelta(minutes=4)).strftime('%Y-%m-%d %H:%M:%S')
         temporary_order_id = nanoid_generate()
 
-        # Атомарно пишем холды по очереди.
-        # free_courts_quantity больше не приходит от клиента — берётся из config внутри create_pending.
+        # Слот quantity приходит от клиента для каждого слота.
         created_slots = []
-        for slot in time_slots:
+        for slot, slot_quantity in time_slots.items():
             db_resp = await db.create_pending(
-                free_courts_quantity, temporary_order_id, location, booking_date, slot, telegram_id, expires_at
+                slot_quantity, temporary_order_id, location, booking_date, slot, telegram_id, expires_at
             )
             if db_resp == 0:
                 # Слот занят — откатываем уже записанные холды по этому order_id

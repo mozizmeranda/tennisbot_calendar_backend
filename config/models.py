@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import date
 
 
@@ -25,11 +25,10 @@ class FreeSlotsBody(BaseModel):
 
 
 class GetFullPriceBody(BaseModel):
-    free_courts_quantity: int = Field(gt=0, description="Кол-во свободных кортов (со стороны фронта)")
     location: str
     day: str
     telegram_id: Optional[int] = None
-    time_slots: List[str]
+    time_slots: Dict[str, int] = Field(..., description="Словарь вида {'10:00-11:00': 2}")
 
 
 class CancelBookingBody(BaseModel):

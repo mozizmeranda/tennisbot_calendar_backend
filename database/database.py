@@ -230,7 +230,7 @@ class Database:
     @serialized_transaction
     async def create_pending(
         self,
-        free_courts_quantity: int,
+        slot_quantity: int,
         temporary_order_id: str,
         location: str,
         booking_date: str,
@@ -250,15 +250,14 @@ class Database:
           2. pending_bookings — старые pending-брони
           3. single_events    — подтверждённые брони из календаря
 
-        free_courts_quantity принимается от клиента, но ограничивается сверху
-        значением из конфига (защита от подделки).
+        slot_quantity принимается от клиента для каждого конкретного слота, 
+        но ограничивается сверху значением из конфига (защита от подделки).
 
         Возвращает True если холд создан, 0 если слот занят, 0 при ошибке.
         """
 
-        # Клиент передаёт free_courts_quantity из /free-slots.
         # Ограничиваем сверху значением из конфига: нельзя забронировать больше кортов, чем есть.
-        max_courts = min(free_courts_quantity, courts.get(location, 1))
+        max_courts = min(slot_quantity, courts.get(location, 1))
         # calendar_id по location (location и есть calendar_id, например 'A', 'B')
         calendar_id = location
 
