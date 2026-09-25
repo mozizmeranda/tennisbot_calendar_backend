@@ -1,9 +1,10 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from config.config import MINI_APP_URL
 
 keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [
-        InlineKeyboardButton(text="🎾 Открыть приложение", web_app=WebAppInfo(url="https://tennisplus.uz/v2.html"))
+        InlineKeyboardButton(text="🎾 Открыть приложение", web_app=WebAppInfo(url=MINI_APP_URL))
     ]
 ])
 

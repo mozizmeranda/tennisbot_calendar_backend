@@ -83,3 +83,7 @@ ADMIN_TG_USERNAME: str = env.str("ADMIN_TG_USERNAME", default="")
 LOCATIONS_YANDEX_MAPS: dict[str, str] = json.loads(
     env.str("LOCATIONS_YANDEX_MAPS", "{}")
 )
+
+
+MINI_APP_URL: str = env.str("MINI_APP_URL")
+
