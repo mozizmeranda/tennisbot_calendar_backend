@@ -13,6 +13,30 @@ from database.database import db
 
 logger = logging.getLogger(__name__)
 
+
+YANDEX_MAPS_LOCS = {
+    "A": "https://yandex.uz/maps/-/CPsVuKPi",
+    "B": "https://yandex.uz/maps/-/CPsVuKPi"
+}
+
+COORDINATES = {
+    "A": {
+        "latitude": 41.310117,
+        "longitude": 69.307324
+    },
+    "B": {
+        "latitude": 41.310117,
+        "longitude": 69.307324
+    }
+}
+
+contacts = {
+    "A": "@Shonigmat", 
+    "B": "@don_tad"
+}
+
+
+
 router = Router()
 
 texts = {
@@ -57,8 +81,27 @@ texts = {
         "en": "If you have issues, contact admin",
         "uz": "Xatolik bo‘lsa, admin bilan bog‘laning",
         "uz-cyr": "Хатолик бўлса, админ билан боғланинг"
+    },
+    "code_lock": {
+        "ru": "У нас установлены кодовые замки, за кодом обращаться к ...",
+        "en": "We have combination locks installed, to get the code contact ...",
+        "uz": "Bizda kodli qulflar o'rnatilgan, kodni olish uchun ...ga murojaat qiling",
+        "uz-cyr": "Бизда кодли қулфлар ўрнатилган, кодни олиш учун ...га мурожаат қилинг"
     }
 }
+
+def code_lock(language, location): 
+    t = {
+        "ru": f"У нас установлены кодовые замки, за кодом обращаться к {contacts[location]}",
+        "en": f"We have combination locks installed, to get the code contact {contacts[location]}",
+        "uz": f"Bizda kodli qulflar o'rnatilgan, kodni olish uchun {contacts[location]} ga murojaat qiling",
+        "uz-cyr": f"Бизда кодли қулфлар ўрнатилган, кодни олиш учун {contacts[location]} га мурожаат қилинг"
+    }
+    
+    tt = t[language]
+    return tt
+
+
 
 yandex_maps = {
     "ru": "📍 Локация на Яндекс Картах:",
@@ -102,9 +145,14 @@ async def admin_confirm(call: CallbackQuery, bot: Bot):
         )
 
         try:
+            await bot.send_location(
+                chat_id=tg_id,
+                latitude=COORDINATES[location]['latitude'],
+                longitude=COORDINATES[location]['longitude']
+            )
             await bot.send_message(
                 chat_id=tg_id,
-                text=f"{text}\n\n{t('payment_confirmed', lang)}\n{t('wait_us', lang)}\n{get_yandex_maps_loc(lang, location)}",
+                text=f"{text}\n\n{t('payment_confirmed', lang)}\n{t('wait_us', lang)}\n{get_yandex_maps_loc(lang, location)}\n{code_lock(lang, location)}",
                 reply_markup=keyboard,
                 link_preview_options={"is_disabled": True}
             )
