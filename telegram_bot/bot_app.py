@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from .keyboards import get_registration_keyboard, keyboard, languages, offer_confirm_kb
 from aiogram.types import ReplyKeyboardRemove
 from .states import Registration
+from .utils import is_valid_phone, offer_message, offer_accepted_and_phone, asking_for_number, texts, number_got
 from database.database import db
 from config.config import TELEGRAM_TOKEN
 from .admin import router as admin_router
