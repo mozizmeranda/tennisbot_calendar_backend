@@ -256,10 +256,9 @@ class Database:
         Возвращает True если холд создан, 0 если слот занят, 0 при ошибке.
         """
 
-        # Ограничиваем сверху значением из конфига: нельзя забронировать больше кортов, чем есть.
-        max_courts = min(slot_quantity, courts.get(location, 1))
-        # calendar_id по location (location и есть calendar_id, например 'A', 'B')
         calendar_id = location
+        calendar_row = await self.execute("SELECT max_events_per_hour FROM calendars WHERE id=?", (calendar_id,), fetchone=True)
+        max_capacity = calendar_row[0] if calendar_row else courts.get(location, 1)
 
         try:
             await self.connection.execute("BEGIN IMMEDIATE")
@@ -301,7 +300,7 @@ class Database:
                     SELECT COUNT(*) FROM single_events
                     WHERE calendar_id = ?
                       AND start_datetime = ?
-                      AND status IN ('confirmed', 'pending_payment')
+                      AND status IN ('confirmed')
                     """,
                     (calendar_id, start_dt),
                     fetchone=True,
@@ -310,7 +309,7 @@ class Database:
 
             total_occupied = n_pending_table + n_pending_bookings + n_single_events
 
-            if total_occupied >= max_courts:
+            if total_occupied >= max_capacity:
                 await self.connection.rollback()
                 return 0
 
