@@ -65,6 +65,7 @@ async def choice_language(call: types.CallbackQuery, state: FSMContext):
         call.from_user.username,
         lang[1]
     )
+    await call.message.edit_reply_markup(reply_markup=None)
     await call.message.answer(text=offer_message[lang[1]], reply_markup=offer_confirm_kb(lang[1]), parse_mode="HTML")
     await state.set_state(Registration.OffertaOk)
     await call.answer()
@@ -86,6 +87,7 @@ async def accept_offer(callback: types.CallbackQuery, state: FSMContext):
         callback.from_user.username,
         lang
     )
+    await callback.message.edit_reply_markup(reply_markup=None)
     await callback.answer()
 
 
