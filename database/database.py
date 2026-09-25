@@ -789,7 +789,7 @@ class Database:
                             "id": pending[0],
                             "calendar_id": calendar_id,
                             "created_by": 0,
-                            "title": "Кто-то думает бронировать или нет....",
+                            "title": f"{pending[0]} думает...",
                             "start_datetime": f"{pending[2]} {pending[3][:5]}:00",
                             "end_datetime": f"{pending[2]} {pending[3][6:]}:00",
                             "status": "pending",

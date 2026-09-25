@@ -125,9 +125,7 @@ async def admin_confirm(call: CallbackQuery, bot: Bot):
                 booking_date=date_str,
                 time_slot=slot_time,
                 screenshot_path=screenshot,
-                price=await db.get_price(location, slot_time) or 0.0,
-                name=name,
-                number=number
+                price=await db.get_price(location, slot_time) or 0.0
             )
 
         await call.answer("Бронь успешно подтверждена!")
