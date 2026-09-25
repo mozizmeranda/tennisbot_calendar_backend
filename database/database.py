@@ -4,7 +4,7 @@ import os
 from typing import Optional, List, Tuple, Any
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 import traceback
 from utils import notify_admin
@@ -281,10 +281,85 @@ class Database:
                 fetchone=True,
             )
             n_pending_bookings = res_bookings[0] if res_bookings else 0
-           
-            r = slot_quantity - n_pending_table - n_pending_bookings
 
-            if r <= 0:
+            # 3. Подтверждённые брони из календаря (single_events + recurring_events) — источник правды
+            n_single_events = 0
+            n_recurring_events = 0
+            if calendar_id is not None:
+                # Слот формата "HH:MM-HH:MM" → парсим start/end
+                parts = time_slot.split("-")
+                start_str = parts[0]
+                end_str = parts[1]
+                start_dt = f"{booking_date} {start_str}:00"
+                if end_str == "00:00":
+                    dt_obj = datetime.strptime(booking_date, "%Y-%m-%d") + timedelta(days=1)
+                    end_dt = f"{dt_obj.strftime('%Y-%m-%d')} 00:00:00"
+                else:
+                    end_dt = f"{booking_date} {end_str}:00"
+
+                # a) Одиночные события (single_events)
+                res_single = await self.execute(
+                    """
+                    SELECT COUNT(*) FROM single_events
+                    WHERE calendar_id = ?
+                      AND start_datetime < ?
+                      AND end_datetime > ?
+                      AND status IN ('confirmed')
+                    """,
+                    (calendar_id, end_dt, start_dt),
+                    fetchone=True,
+                )
+                n_single_events = res_single[0] if res_single else 0
+
+                # b) Повторяющиеся события (recurring_events)
+                try:
+                    weekday = datetime.strptime(booking_date, "%Y-%m-%d").weekday()
+                    recurring_rows = await self.execute(
+                        """
+                        SELECT id, start_time, end_time FROM recurring_events
+                        WHERE calendar_id = ? AND day_of_week = ?
+                        """,
+                        (calendar_id, weekday),
+                        fetchall=True,
+                    )
+                    if recurring_rows:
+                        cancelled_rows = await self.execute(
+                            """
+                            SELECT recurring_event_id FROM single_events
+                            WHERE calendar_id = ?
+                              AND start_datetime < ?
+                              AND end_datetime > ?
+                              AND status = 'cancelled'
+                              AND recurring_event_id IS NOT NULL
+                            """,
+                            (calendar_id, end_dt, start_dt),
+                            fetchall=True,
+                        )
+                        cancelled_ids = {r[0] for r in cancelled_rows} if cancelled_rows else set()
+
+                        for re in recurring_rows:
+                            re_id, r_start, r_end = re[0], re[1], re[2]
+                            if re_id in cancelled_ids:
+                                continue
+
+                            r_start_fmt = r_start if len(r_start) == 8 else f"{r_start}:00"
+                            r_end_fmt = r_end if len(r_end) == 8 else f"{r_end}:00"
+
+                            re_start_dt = f"{booking_date} {r_start_fmt}"
+                            if r_end_fmt == "00:00:00":
+                                next_day = (datetime.strptime(booking_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+                                re_end_dt = f"{next_day} 00:00:00"
+                            else:
+                                re_end_dt = f"{booking_date} {r_end_fmt}"
+
+                            if re_start_dt < end_dt and re_end_dt > start_dt:
+                                n_recurring_events += 1
+                except Exception as ex:
+                    logger.error("Error querying recurring_events in create_pending: %s", ex)
+
+            total_occupied = n_pending_table + n_pending_bookings + n_single_events + n_recurring_events
+
+            if total_occupied >= max_capacity:
                 await self.connection.rollback()
                 return 0
 
