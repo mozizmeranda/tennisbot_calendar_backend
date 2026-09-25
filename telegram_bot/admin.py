@@ -5,6 +5,7 @@ from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
+from config.config import ADMIN_TG_USERNAME
 
 from database.database import db
 
@@ -162,7 +163,7 @@ async def admin_reject(call: CallbackQuery, bot: Bot):
                 text=(
                     f"{text}\n\n"
                     f"{t('payment_rejected', lang)}❌\n"
-                    f"{t('contact_admin', lang)}: <b>@crov123</b>"
+                    f"{t('contact_admin', lang)}: <b>@{ADMIN_TG_USERNAME}</b>"
                 ),
                 parse_mode="HTML"
             )
