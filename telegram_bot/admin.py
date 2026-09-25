@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 from .keyboards import keyboard, rs_confirm_keys
 from config.config import ADMIN_TG_USERNAME, LOCATIONS_YANDEX_MAPS
-from states import Mailing
+from .states import Mailing
 
 from database.database import db
 
