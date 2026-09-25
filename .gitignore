@@ -34,3 +34,4 @@ telegram_bot/fsm_storage.db
 database/test_users.db
 
 .gitignore
+telegram_bot/admin.py
