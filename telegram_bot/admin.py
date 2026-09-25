@@ -5,7 +5,7 @@ from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
-from config.config import ADMIN_TG_USERNAME
+from config.config import ADMIN_TG_USERNAME, LOCATIONS_YANDEX_MAPS
 
 from database.database import db
 
@@ -58,6 +58,17 @@ texts = {
     }
 }
 
+yandex_maps = {
+    "ru": "📍 Локация на Яндекс Картах:",
+    "en": "📍 Location on Yandex Maps:",
+    "uz": "📍 Yandex Xaritada joylashuv:",
+    "uz-cyr": "📍 Яндекс Харитада жойлашув:"
+}
+
+def get_yandex_maps_loc(language, location):
+    t = f"{yandex_maps[language]} {LOCATIONS_YANDEX_MAPS[location]}"
+    return t
+
 
 def t(key: str, lang: str) -> str:
     return texts.get(key, {}).get(lang, texts.get(key, {}).get("ru", ""))
@@ -91,7 +102,7 @@ async def admin_confirm(call: CallbackQuery, bot: Bot):
         try:
             await bot.send_message(
                 chat_id=tg_id,
-                text=f"{text}\n\n{t('payment_confirmed', lang)}\n{t('wait_us', lang)}"
+                text=f"{text}\n\n{t('payment_confirmed', lang)}\n{t('wait_us', lang)}\n{get_yandex_maps_loc(lang, location)}"
             )
         except Exception as e:
             logger.warning("Failed to send notification to user %s: %s", tg_id, e)
@@ -158,6 +169,7 @@ async def admin_reject(call: CallbackQuery, bot: Bot):
         )
 
         try:
+
             await bot.send_message(
                 chat_id=tg_id,
                 text=(
