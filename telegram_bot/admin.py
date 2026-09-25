@@ -176,7 +176,7 @@ async def admin_confirm(call: CallbackQuery, bot: Bot):
                 title = f"{name} | {number}" if (name != "Неизвестно" or number != "Неизвестно") else f"Booking #{tg_id}"
                 await db.create_single_event(
                     calendar_id=location,
-                    created_by=tg_id,
+                    created_by=0,
                     title=title,
                     start_datetime=start_dt,
                     end_datetime=end_dt,

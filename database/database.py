@@ -406,24 +406,25 @@ class Database:
         params = (telegram_id, message_id, chat_id)
         await self.execute(sql, parameters=params, commit=True)
 
-    async def get_booked_slots(self, location: str, date_str: str) -> list:
-
+    async def get_booked_slots(self, location: str, date_str: str) -> dict:
         """
         Возвращает список занятых time_slot для данной локации и даты.
         Учитывает как single_events, так и recurring_events (с учётом отмен).
+        Разбивает события любой длительности (в т.ч. многочасовые) на 1-часовые слоты из TIME_SLOTS.
         pending_table учитывается отдельно через db.pendings().
         """
+        from config.config import TIME_SLOTS
 
         calendar_id = location
         if not calendar_id:
             logger.warning("get_booked_slots: unknown location=%s", location)
-            return []
+            return {"max_quantity": 1, "slots": []}
 
         try:
             target_date = date_type.fromisoformat(date_str)
         except ValueError:
             logger.warning("get_booked_slots: invalid date_str=%s", date_str)
-            return []
+            return {"max_quantity": 1, "slots": []}
 
         from_str = f"{date_str} 00:00:00"
         to_str = f"{date_str} 23:59:59"
@@ -440,14 +441,32 @@ class Database:
         grid = _build_grid(active, cancelled_pairs, recurring, target_date, target_date)
 
         row = await self.execute("SELECT max_events_per_hour FROM calendars WHERE id=?", (calendar_id,), fetchone=True)
-        max_quantity = row[0] if row else 1
+        max_quantity = row[0] if row else courts.get(location, 1)
+
+        booked_slots = []
+        for e in grid:
+            try:
+                e_start = datetime.fromisoformat(e["start_datetime"])
+                e_end = datetime.fromisoformat(e["end_datetime"])
+            except Exception:
+                continue
+
+            for slot in TIME_SLOTS:
+                parts = slot.split("-")
+                s_start_str, s_end_str = parts[0], parts[1]
+                slot_start = datetime.fromisoformat(f"{date_str} {s_start_str}:00")
+                if s_end_str == "00:00":
+                    next_d = target_date + timedelta(days=1)
+                    slot_end = datetime.fromisoformat(f"{next_d.isoformat()} 00:00:00")
+                else:
+                    slot_end = datetime.fromisoformat(f"{date_str} {s_end_str}:00")
+
+                if e_start < slot_end and e_end > slot_start:
+                    booked_slots.append(slot)
 
         return {
             "max_quantity": max_quantity,
-            "slots": [
-                f"{e['start_datetime'][11:16]}-{e['end_datetime'][11:16]}"
-                for e in grid
-            ]
+            "slots": booked_slots
         }
 
     # ---------------------------------------------------------
@@ -808,18 +827,18 @@ class Database:
                     SELECT id, calendar_id, created_by, title,
                            start_datetime, end_datetime, status, recurring_event_id, created_at
                     FROM single_events
-                    WHERE calendar_id=? AND start_datetime>=? AND start_datetime<=?
+                    WHERE calendar_id=? AND start_datetime<? AND end_datetime>?
                       AND status IN ({placeholders})
                 """
-                params = (calendar_id, from_dt, to_dt, *statuses)
+                params = (calendar_id, to_dt, from_dt, *statuses)
             else:
                 sql = """
                     SELECT id, calendar_id, created_by, title,
                            start_datetime, end_datetime, status, recurring_event_id, created_at
                     FROM single_events
-                    WHERE calendar_id=? AND start_datetime>=? AND start_datetime<=?
+                    WHERE calendar_id=? AND start_datetime<? AND end_datetime>?
                 """
-                params = (calendar_id, from_dt, to_dt)
+                params = (calendar_id, to_dt, from_dt)
 
             lst = []
             pending_table_sql = "SELECT * FROM pending_table WHERE booking_date BETWEEN ? AND ? AND location = ? AND expires_at > ?"
@@ -892,7 +911,7 @@ class Database:
     async def create_single_event(
             self,
             calendar_id: str,
-            created_by: int,
+            created_by: Optional[int],
             title: str,
             start_datetime: str,
             end_datetime: str,
@@ -900,17 +919,41 @@ class Database:
             recurring_event_id: Optional[int] = None,
     ) -> Optional[dict]:
         """start_datetime / end_datetime — строки 'YYYY-MM-DD HH:MM:SS'."""
-        sql = """
-            INSERT INTO single_events
-                (calendar_id, created_by, title, start_datetime, end_datetime, status, recurring_event_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """
-        params = (calendar_id, created_by, title, start_datetime, end_datetime, status, recurring_event_id)
         try:
-            await self.execute(sql, parameters=params, commit=True)
+            # Гарантируем существование записи в calendars для этого calendar_id
+            await self.connection.execute(
+                "INSERT OR IGNORE INTO calendars (id, name, max_events_per_hour) VALUES (?, ?, ?)",
+                (calendar_id, f"Корт {calendar_id}", courts.get(calendar_id, 1)),
+            )
+
+            # Гарантируем существование записи в calendar_users для created_by (если указан)
+            if created_by:
+                await self.connection.execute(
+                    "INSERT OR IGNORE INTO calendar_users (telegram_id, username, full_name) VALUES (?, ?, ?)",
+                    (created_by, "", "User"),
+                )
+            else:
+                created_by = None
+
+            if recurring_event_id:
+                async with self.connection.execute("SELECT id FROM recurring_events WHERE id=?", (recurring_event_id,)) as cursor:
+                    rec_row = await cursor.fetchone()
+                if not rec_row:
+                    recurring_event_id = None
+
+            sql = """
+                INSERT INTO single_events
+                    (calendar_id, created_by, title, start_datetime, end_datetime, status, recurring_event_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """
+            params = (calendar_id, created_by, title, start_datetime, end_datetime, status, recurring_event_id)
+            await self.connection.execute(sql, params)
+            await self.connection.commit()
+
             row = await self.execute("SELECT last_insert_rowid()", fetchone=True)
             return await self.get_single_event(row[0])
         except Exception:
+            await self.connection.rollback()
             logger.exception("create_single_event failed: calendar_id=%s", calendar_id)
             return None
 
@@ -985,24 +1028,39 @@ class Database:
     async def create_recurring_event(
             self,
             calendar_id: str,
-            created_by: int,
+            created_by: Optional[int],
             title: str,
             day_of_week: int,
             start_time: str,
             end_time: str,
     ) -> Optional[dict]:
         """start_time / end_time — строки 'HH:MM:SS'."""
-        sql = """
-            INSERT INTO recurring_events
-                (calendar_id, created_by, title, day_of_week, start_time, end_time)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """
-        params = (calendar_id, created_by, title, day_of_week, start_time, end_time)
         try:
-            await self.execute(sql, parameters=params, commit=True)
+            await self.connection.execute(
+                "INSERT OR IGNORE INTO calendars (id, name, max_events_per_hour) VALUES (?, ?, ?)",
+                (calendar_id, f"Корт {calendar_id}", courts.get(calendar_id, 1)),
+            )
+            if created_by:
+                await self.connection.execute(
+                    "INSERT OR IGNORE INTO calendar_users (telegram_id, username, full_name) VALUES (?, ?, ?)",
+                    (created_by, "", "User"),
+                )
+            else:
+                created_by = None
+
+            sql = """
+                INSERT INTO recurring_events
+                    (calendar_id, created_by, title, day_of_week, start_time, end_time)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """
+            params = (calendar_id, created_by, title, day_of_week, start_time, end_time)
+            await self.connection.execute(sql, params)
+            await self.connection.commit()
+
             row = await self.execute("SELECT last_insert_rowid()", fetchone=True)
             return await self.get_recurring_event(row[0])
         except Exception:
+            await self.connection.rollback()
             logger.exception("create_recurring_event failed: calendar_id=%s", calendar_id)
             return None
 
