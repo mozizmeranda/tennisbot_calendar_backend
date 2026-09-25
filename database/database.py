@@ -281,55 +281,10 @@ class Database:
                 fetchone=True,
             )
             n_pending_bookings = res_bookings[0] if res_bookings else 0
+           
+            r = slot_quantity - n_pending_table - n_pending_bookings
 
-            # 3. Подтверждённые брони из календаря (single_events) — источник правды
-            n_single_events = 0
-            if calendar_id is not None:
-                # Слот формата "HH:MM-HH:MM" → парсим start/end
-                parts = time_slot.split("-")
-                start_str = parts[0]
-                end_str = parts[1]
-                start_dt = f"{booking_date} {start_str}:00"
-                end_dt = (
-                    f"{booking_date} {end_str}:00"
-                    if end_str != "00:00"
-                    else f"{booking_date[:-2]}{int(booking_date[-2:]) + 1:02d} 00:00:00"  # noqa
-                )
-                res_single = await self.execute(
-                    """
-                    SELECT COUNT(*) FROM single_events
-                    WHERE calendar_id = ?
-                      AND start_datetime = ?
-                      AND status IN ('confirmed')
-                    """,
-                    (calendar_id, start_dt),
-                    fetchone=True,
-                )
-                n_single_events = res_single[0] if res_single else 0
-
-                # 4. Повторяющиеся брони из календаря (recurring_events)
-                day_of_week = datetime.strptime(booking_date, "%Y-%m-%d").weekday()
-                start_time_str = f"{start_str}:00"
-                res_recurring = await self.execute(
-                    """
-                    SELECT COUNT(*) FROM recurring_events re
-                    WHERE re.calendar_id = ? 
-                      AND re.day_of_week = ? 
-                      AND re.start_time = ?
-                      AND NOT EXISTS (
-                          SELECT 1 FROM cancelled_recurring_instances cri 
-                          WHERE cri.recurring_event_id = re.id 
-                            AND cri.cancel_date = ?
-                      )
-                    """,
-                    (calendar_id, day_of_week, start_time_str, booking_date),
-                    fetchone=True,
-                )
-                n_recurring_events = res_recurring[0] if res_recurring else 0
-
-            total_occupied = n_pending_table + n_pending_bookings + n_single_events + n_recurring_events
-
-            if total_occupied >= max_capacity:
+            if r <= 0:
                 await self.connection.rollback()
                 return 0
 
