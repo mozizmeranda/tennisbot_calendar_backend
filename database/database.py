@@ -170,8 +170,8 @@ class Database:
 
 
     async def pendings(self, location: str, day: str, time_slot: str) -> int:
-        sql = "SELECT COUNT(*) FROM pending_table WHERE location=? AND booking_date=? AND time_slot=?"
-        params = (location, day, time_slot)
+        sql = "SELECT COUNT(*) FROM pending_table WHERE location=? AND booking_date=? AND time_slot=? AND expires_at > ?"
+        params = (location, day, time_slot, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         data = await self.execute(sql, parameters=params, fetchone=True)
 
         sql2 = "SELECT COUNT(*) FROM pending_bookings WHERE location=? AND booking_date=? AND time_slots=?"
@@ -786,12 +786,12 @@ class Database:
                 for pending in pending_table:
                     lst.append(
                         {
-                            "id": pending[0],
+                            "id": pending[5],
                             "calendar_id": calendar_id,
                             "created_by": 0,
-                            "title": f"{pending[0]} думает...",
-                            "start_datetime": f"{pending[2]} {pending[3][:5]}:00",
-                            "end_datetime": f"{pending[2]} {pending[3][6:]}:00",
+                            "title": f"Пользователь думает...",
+                            "start_datetime": f"{pending[1]} {pending[2][:5]}:00",
+                            "end_datetime": f"{pending[1]} {pending[2][6:]}:00",
                             "status": "pending",
                             "recurring_event_id": 0,
                             "created_at": 0,
