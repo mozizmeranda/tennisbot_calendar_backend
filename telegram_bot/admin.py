@@ -5,7 +5,9 @@ from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
+from .keyboards import keyboard, rs_confirm_keys
 from config.config import ADMIN_TG_USERNAME, LOCATIONS_YANDEX_MAPS
+from states import Mailing
 
 from database.database import db
 
@@ -102,7 +104,9 @@ async def admin_confirm(call: CallbackQuery, bot: Bot):
         try:
             await bot.send_message(
                 chat_id=tg_id,
-                text=f"{text}\n\n{t('payment_confirmed', lang)}\n{t('wait_us', lang)}\n{get_yandex_maps_loc(lang, location)}"
+                text=f"{text}\n\n{t('payment_confirmed', lang)}\n{t('wait_us', lang)}\n{get_yandex_maps_loc(lang, location)}",
+                reply_markup=keyboard,
+                link_preview_options={"is_disabled": True}
             )
         except Exception as e:
             logger.warning("Failed to send notification to user %s: %s", tg_id, e)
@@ -186,3 +190,36 @@ async def admin_reject(call: CallbackQuery, bot: Bot):
     except Exception as e:
         logger.exception("Error in admin_reject: %s", e)
         await call.answer(f"Ошибка при отклонении: {e}", show_alert=True)
+
+
+
+
+@router.message(Command("rs"))
+async def rs_command(message: Message, state: FSMContext):
+    await message.answer("Отправьте текст для рассылки")
+    await state.set_state(Mailing.get_text)
+
+
+@router.message(Mailing.get_text)
+async def get_text_state(message: Message, state: FSMContext):
+    await message.answer(f"Ваш текст: {message.html_text}", parse_mode="HTML", reply_markup=rs_confirm_keys)
+    await state.set_state(Mailing.confirm_mailing)
+    await state.update_data(selected_text=message.html_text)
+
+
+@router.callback_query(F.data == "rs_confirm", Mailing.confirm_mailing)
+async def rs_confirm(call: CallbackQuery, state: FSMContext, bot: Bot):
+    users = db.get_all_users()
+    await call.answer("Рассылка началась", show_alert=True)
+    selected_text = await state.get_value("selected_text")
+    for user in users:
+        await bot.send_message(chat_id=user[0], text=selected_text, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "rs_cancel", Mailing.confirm_mailing)
+async def rs_cancel(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await call.message.answer("Чтобы снова сделать рассылку, вызовите команду /rs")
+    await state.clear()
+
+
