@@ -58,4 +58,3 @@ alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 
 def nanoid_generate():
     return generate(alphabet, 8)
-

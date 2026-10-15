@@ -7,10 +7,10 @@ def is_valid_phone(phone):
     return bool(re.match(pattern, phone))
     
 offer_message = {
-    "ru": "Перед бронированием, пожалуйста, ознакомьтесь с <a href=\"https://telegra.ph/PUBLICHNAYA-OFERTA-04-12-4\">условиями публичной оферты</a>.\n\nПродолжая, вы подтверждаете согласие с условиями.",
-    "en": "Before booking, please review the <a href=\"https://telegra.ph/PUBLIC-OFFER-04-12\">public offer terms</a>.\n\nBy continuing, you agree to the terms.",
-    "uz": "Bron qilishdan oldin, iltimos, <a href=\"https://telegra.ph/OMMAVIY-OFERTA-04-12\">ommaviy oferta shartlari</a> bilan tanishing.\n\nDavom etish orqali siz shartlarga rozilik bildirasiz.",
-    "uz-cyr": "Брон қилишдан олдин, илтимос, <a href=\"https://telegra.ph/OMMAVIJ-OFERTA-04-12\">оммавий оферта шартлари</a> билан танишинг.\n\nДавом этиш орқали сиз шартларга розилик билдирасиз."
+    "ru": "Перед бронированием, пожалуйста, ознакомьтесь с <a href=\"https://telegra.ph/Pravila-arendy-korta-Ace-Club-05-19\">условиями публичной оферты</a>.\n\nПродолжая, вы подтверждаете согласие с условиями.",
+    "en": "Before booking, please review the <a href=\"https://telegra.ph/Ace-Club-Court-Rental-Rules-05-19\">public offer terms</a>.\n\nBy continuing, you agree to the terms.",
+    "uz": "Bron qilishdan oldin, iltimos, <a href=\"https://telegra.ph/Ace-Club-kortini-ijaraga-olish-qoidalari-05-19\">ommaviy oferta shartlari</a> bilan tanishing.\n\nDavom etish orqali siz shartlarga rozilik bildirasiz.",
+    "uz-cyr": "Брон қилишдан олдин, илтимос, <a href=\"https://telegra.ph/Ace-Club-kortini-izharaga-olish-%D2%9Boidalari-05-19\">оммавий оферта шартлари</a> билан танишинг.\n\nДавом этиш орқали сиз шартларга розилик билдирасиз."
 }
 
 
@@ -46,22 +46,22 @@ texts = {
         "ru": """🎾 Добро пожаловать в систему бронирования теннисных кортов!
 
 Здесь вы можете забронировать корт на удобное время.
-У нас доступно 5 кортов в 2 локациях.""",
+У нас доступно 2 хард-корта.""",
 
         "en": """🎾 Welcome to the tennis court booking system!
 
 Here you can book a court at a convenient time.
-We have 5 courts available in 2 locations.""",
+We have 2 hard courts available.""",
 
         "uz": """🎾 Tennis kortlarini bron qilish tizimiga xush kelibsiz!
 
 Bu yerda siz o'zingizga qulay vaqtda kort bron qilishingiz mumkin.
-Bizda 2 ta lokatsiyada 5 ta kort mavjud.""",
+Bizda 2 ta xard-kort mavjud.""",
 
         "uz-cyr": """🎾 Теннис кортларини брон қилиш тизимига хуш келибсиз!
 
 Бу ерда сиз ўзингизга қулай вақтда корт брон қилишингиз мумкин.
-Бизда 2 та локацияда 5 та корт мавжуд."""
+Бизда 2 та хард-корт мавжуд."""
     }
 }
 
