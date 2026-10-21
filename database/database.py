@@ -227,6 +227,20 @@ class Database:
         results = await self.execute(sql, params, fetchall=True)
         return [r[0] for r in results] if results else []
 
+    @staticmethod
+    def _slot_to_datetimes(date_str: str, slot_time: str) -> Optional[Tuple[str, str]]:
+        """Та же логика, что в telegram_bot/admin.py: 'HH:MM-HH:MM' -> (start_dt, end_dt)."""
+        parts = slot_time.split("-")
+        if len(parts) != 2:
+            return None
+        start_str, end_str = parts
+        if end_str == "00:00":
+            dt_obj = datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)
+            end_dt = f"{dt_obj.strftime('%Y-%m-%d')} 00:00:00"
+        else:
+            end_dt = f"{date_str} {end_str}:00"
+        return f"{date_str} {start_str}:00", end_dt
+
     async def _slot_occupancy(self, location: str, booking_date: str, time_slot: str) -> Tuple[int, int]:
         """
         Возвращает (занято, вместимость). НЕ коммитит и НЕ берёт lock —
