@@ -86,4 +86,4 @@ LOCATIONS_YANDEX_MAPS: dict[str, str] = json.loads(
 
 
 MINI_APP_URL: str = env.str("MINI_APP_URL")
-
+PLAY_ON_API_KEY: str = env.str("PLAY_ON_API_KEY")

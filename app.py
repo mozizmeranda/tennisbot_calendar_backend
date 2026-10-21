@@ -8,7 +8,7 @@ from config import config, models
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi import FastAPI, status, Body, Depends, Request, HTTPException
+from fastapi import FastAPI, status, Body, Depends, Request, HTTPException, Header
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import JSONResponse
 
@@ -81,6 +81,12 @@ async def lifespan(app: FastAPI):
 
     logger.info("Остановка приложения...")
 
+
+def is_trusted_api_key(request: Request) -> bool:
+    api_key = request.headers.get("X-Api-Key")
+    if not api_key:
+        return False
+    return secrets.compare_digest(api_key, config.PLAY_ON_API_KEY)
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(lifespan=lifespan, root_path=config.ROOT_PATH, docs_url=None, redoc_url=None, openapi_url=None)
@@ -184,7 +190,7 @@ def get_documentation(request: Request):
 
 
 @app.post("/free-slots")
-@limiter.limit("5/minute")
+@limiter.limit("5/minute", exempt_when=is_trusted_api_key)
 async def free_slots_endpoint(request: Request, body: models.FreeSlotsBody):
     """
     Возвращает свободные слоты для бронирования корта на указанную дату.
@@ -362,33 +368,45 @@ async def get_full_price_handler(body: models.GetFullPriceBody):
         prices = await db.get_prices_bulk(location, slot_keys)
         total_price = sum(prices)
 
-        expires_at = (datetime.now() + timedelta(minutes=4)).strftime('%Y-%m-%d %H:%M:%S')
+        delta = 4
+        if telegram_id == 0:
+            delta =  15
+
+        expires_at = (datetime.now() + timedelta(minutes=delta)).strftime('%Y-%m-%d %H:%M:%S')
         temporary_order_id = nanoid_generate()
 
         # Слот quantity приходит от клиента для каждого слота.
-        created_slots = []
-        for slot, slot_quantity in time_slots.items():
-            db_resp = await db.create_pending(
-                slot_quantity, temporary_order_id, location, booking_date, slot, telegram_id, expires_at
-            )
-            if db_resp == 0:
-                # Слот занят — откатываем уже записанные холды по этому order_id
-                if created_slots:
-                    await db.cancel_pending_by_order_id(temporary_order_id)
-                    logger.warning(
-                        "Partial rollback: cancelled %d pending(s) for order_id=%s",
-                        len(created_slots), temporary_order_id,
-                    )
+        # created_slots = []
+        # for slot, slot_quantity in time_slots.items():
+        #     db_resp = await db.create_pending(
+        #         slot_quantity, temporary_order_id, location, booking_date, slot, telegram_id, expires_at
+        #     )
+        #     if db_resp == 0:
+        #         # Слот занят — откатываем уже записанные холды по этому order_id
+        #         if created_slots:
+        #             await db.cancel_pending_by_order_id(temporary_order_id)
+        #             logger.warning(
+        #                 "Partial rollback: cancelled %d pending(s) for order_id=%s",
+        #                 len(created_slots), temporary_order_id,
+        #             )
 
-                logger.warning(
-                    "Slot occupied: order_id=%s telegram_id=%s slot=%s",
-                    temporary_order_id, telegram_id, slot,
-                )
-                return JSONResponse(
-                    status_code=status.HTTP_409_CONFLICT,
-                    content={"message": "Слоты уже успели занять к сожалению...."}
-                )
-            created_slots.append(slot)
+        #         logger.warning(
+        #             "Slot occupied: order_id=%s telegram_id=%s slot=%s",
+        #             temporary_order_id, telegram_id, slot,
+        #         )
+        #         return JSONResponse(
+        #             status_code=status.HTTP_409_CONFLICT,
+        #             content={"message": "Слоты уже успели занять к сожалению...."}
+        #         )
+        #     created_slots.append(slot)
+        res = await db.create_pending_multi(
+            temporary_order_id, location, booking_date, slot_keys, telegram_id, expires_at
+        )
+        if not res["ok"]:
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={"message": "Слоты уже успели занять к сожалению...."},
+            )
 
         logger.info("Order created: order_id=%s telegram_id=%s", temporary_order_id, telegram_id)
         return JSONResponse(
@@ -431,70 +449,28 @@ async def cancel_booking_endpoint(body: models.CancelBookingBody = Body(...)):
 
 
 @app.post("/perform-booking", tags=["Booking"])
-async def perform_booking_endpoint(body: models.PerformBookingBody = Body(...)):
-    """
-    Автоматическое подтверждение брони внешним сервисом (после оплаты).
-    Берет данные из pending_table и переводит их в полноценную бронь (bookings + events).
-    """
+async def perform_booking_endpoint(body: models.PerformBookingBody = Body(...), x_api_key: str = Header(..., alias="X-API-Key")):
+
+    if not secrets.compare_digest(x_api_key, config.PLAY_ON_API_KEY):
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": "Неверный API-ключ"})
+
     try:
-        # 1. Получаем временную бронь
-        data = await db.execute("SELECT * FROM pending_table WHERE temporary_order_id=?", (body.booking_id,), fetchall=True)
-        if not data:
-            return JSONResponse(
-                status_code=status.HTTP_404_NOT_FOUND,
-                content={"error": "Бронь не найдена или истекло время"}
-            )
-            
-        location = data[0][1]
-        date_str = data[0][2]
-        
-        # 3. Сохраняем слоты
-        for rec in data:
-            slot_time = rec[3]
-            parts = slot_time.split("-")
-            if len(parts) == 2:
-                start_str, end_str = parts[0], parts[1]
-                if end_str == "00:00":
-                    dt_obj = datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)
-                    end_dt = f"{dt_obj.strftime('%Y-%m-%d')} 00:00:00"
-                else:
-                    end_dt = f"{date_str} {end_str}:00"
-                start_dt = f"{date_str} {start_str}:00"
-
-                title = f"Бронь {body.number} Play On"
-                
-                # Создаем событие в календаре
-                await db.create_single_event(
-                    calendar_id=location,
-                    created_by=None,
-                    title=title,
-                    start_datetime=start_dt,
-                    end_datetime=end_dt,
-                    status="confirmed",
-                )
-
-            # Сохраняем в таблицу bookings
-            await db.create_booking(
-                telegram_id=0,
-                location=location,
-                booking_date=date_str,
-                time_slot=slot_time,
-                screenshot_path="",  # Нет скриншота, так как авто-оплата
-                price=await db.get_price(location, slot_time) or 0.0,
-            )
-            
-        # 4. Удаляем из pending_table
-        await db.cancel_pending_by_order_id(body.booking_id)
-            
-        return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "success", "message": "Бронь успешно подтверждена"})
-        
+        res = await db.confirm_pending_booking(
+            body.booking_id, title=f"PlayOn - {body.number}"
+        )
+        if res["status"] == "already":
+            return JSONResponse(status_code=status.HTTP_200_OK,
+                                content={"status": "success", "message": "Бронь уже подтверждена."})
+        if res["status"] == "not_found":
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND,
+                                content={"error": "Бронь не найдена или истекло время"})
+        return JSONResponse(status_code=status.HTTP_201_CREATED,
+                            content={"status": "success", "message": "Бронь успешно подтверждена"})
     except Exception as e:
         logger.error("perform-booking error: %s", e)
         await notify_admin(perform_booking_endpoint.__name__, error=str(traceback.format_exc()), arguments=dict(body))
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"error": "Внутренняя ошибка при подтверждении брони"}
-        )
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            content={"error": "Внутренняя ошибка при подтверждении брони"})
 
 
 

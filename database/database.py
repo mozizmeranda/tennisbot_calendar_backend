@@ -227,6 +227,167 @@ class Database:
         results = await self.execute(sql, params, fetchall=True)
         return [r[0] for r in results] if results else []
 
+    async def _slot_occupancy(self, location: str, booking_date: str, time_slot: str) -> Tuple[int, int]:
+        """
+        Возвращает (занято, вместимость). НЕ коммитит и НЕ берёт lock —
+        вызывать только внутри открытой транзакции из @serialized_transaction метода.
+        Ошибки пробрасываются наружу (чтобы вызывающий откатил транзакцию),
+        а не глотаются — иначе занятость будет занижена.
+        """
+        calendar_row = await self.execute(
+            "SELECT max_events_per_hour FROM calendars WHERE id=?", (location,), fetchone=True
+        )
+        max_capacity = calendar_row[0] if calendar_row else courts.get(location, 1)
+
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        r = await self.execute(
+            """SELECT COUNT(*) FROM pending_table
+               WHERE location=? AND booking_date=? AND time_slot=? AND expires_at > ?""",
+            (location, booking_date, time_slot, now), fetchone=True,
+        )
+        n_pending_table = r[0] if r else 0
+
+        r = await self.execute(
+            "SELECT COUNT(*) FROM pending_bookings WHERE location=? AND booking_date=? AND time_slots=?",
+            (location, booking_date, time_slot), fetchone=True,
+        )
+        n_pending_bookings = r[0] if r else 0
+
+        dts = self._slot_to_datetimes(booking_date, time_slot)
+        if not dts:
+            raise ValueError(f"Bad time_slot: {time_slot}")
+        start_dt, end_dt = dts
+
+        r = await self.execute(
+            """SELECT COUNT(*) FROM single_events
+               WHERE calendar_id=? AND start_datetime < ? AND end_datetime > ? AND status='confirmed'""",
+            (location, end_dt, start_dt), fetchone=True,
+        )
+        n_single = r[0] if r else 0
+
+        n_recurring = 0
+        weekday = datetime.strptime(booking_date, "%Y-%m-%d").weekday()
+        recurring_rows = await self.execute(
+            "SELECT id, start_time, end_time FROM recurring_events WHERE calendar_id=? AND day_of_week=?",
+            (location, weekday), fetchall=True,
+        )
+        if recurring_rows:
+            cancelled_rows = await self.execute(
+                """SELECT recurring_event_id FROM single_events
+                   WHERE calendar_id=? AND start_datetime < ? AND end_datetime > ?
+                     AND status='cancelled' AND recurring_event_id IS NOT NULL""",
+                (location, end_dt, start_dt), fetchall=True,
+            )
+            cancelled_ids = {c[0] for c in cancelled_rows} if cancelled_rows else set()
+            next_day = (datetime.strptime(booking_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            for re_id, r_start, r_end in recurring_rows:
+                if re_id in cancelled_ids:
+                    continue
+                r_start = r_start if len(r_start) == 8 else f"{r_start}:00"
+                r_end = r_end if len(r_end) == 8 else f"{r_end}:00"
+                re_start_dt = f"{booking_date} {r_start}"
+                re_end_dt = f"{next_day} 00:00:00" if r_end == "00:00:00" else f"{booking_date} {r_end}"
+                if re_start_dt < end_dt and re_end_dt > start_dt:
+                    n_recurring += 1
+
+        return n_pending_table + n_pending_bookings + n_single + n_recurring, max_capacity
+
+    @serialized_transaction
+    async def create_pending_multi(
+        self,
+        temporary_order_id: str,
+        location: str,
+        booking_date: str,
+        time_slots: List[str],
+        telegram_id: int,
+        expires_at: str,
+    ) -> dict:
+        """
+        Всё-или-ничего: либо созданы холды на ВСЕ слоты, либо ни одного.
+        Возвращает {"ok": True} или {"ok": False, "reason": "occupied", "slot": ...}.
+        Любая другая ошибка -> rollback + исключение.
+        """
+        conn = self.connection
+        try:
+            await conn.execute("BEGIN IMMEDIATE")
+            for slot in time_slots:
+                occupied, capacity = await self._slot_occupancy(location, booking_date, slot)
+                if occupied >= capacity:
+                    await conn.rollback()
+                    return {"ok": False, "reason": "occupied", "slot": slot}
+                await conn.execute(
+                    """INSERT INTO pending_table
+                           (temporary_order_id, location, booking_date, time_slot, telegram_id, expires_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (temporary_order_id, location, booking_date, slot, telegram_id, expires_at),
+                )
+            await conn.commit()
+            return {"ok": True}
+        except Exception:
+            await conn.rollback()
+            logger.exception("create_pending_multi failed: order_id=%s", temporary_order_id)
+            raise
+
+    @serialized_transaction
+    async def confirm_pending_booking(self, order_id: str, title: str) -> dict:
+        """
+        Атомарно: pending_table -> single_events + bookings, затем удаление холдов.
+        Идемпотентно: повторный вызов вернёт {"status": "already"}.
+        Возвращает {"status": "created" | "already" | "not_found"}.
+        """
+        conn = self.connection
+        try:
+            await conn.execute("BEGIN IMMEDIATE")
+
+            async with conn.execute("SELECT 1 FROM bookings WHERE booking_id=? LIMIT 1", (order_id,)) as cur:
+                if await cur.fetchone():
+                    await conn.rollback()
+                    return {"status": "already"}
+
+            async with conn.execute(
+                "SELECT location, booking_date, time_slot FROM pending_table WHERE temporary_order_id=?",
+                (order_id,),
+            ) as cur:
+                holds = await cur.fetchall()
+            if not holds:
+                await conn.rollback()
+                return {"status": "not_found"}
+
+            for rec in holds:
+                location = rec[0]
+                date_str = rec[1]
+                slot_time = rec[2]
+
+                dts = self._slot_to_datetimes(date_str, slot_time)
+                if dts:
+                    await conn.execute(
+                        """INSERT INTO single_events
+                               (calendar_id, created_by, title, start_datetime, end_datetime, status)
+                           VALUES (?, NULL, ?, ?, ?, 'confirmed')""",
+                        (location, title, dts[0], dts[1]),
+                    )
+
+                async with conn.execute(
+                    "SELECT price FROM price WHERE location=? AND time_slot=?", (location, slot_time)
+                ) as cur:
+                    prow = await cur.fetchone()
+                price = prow[0] if prow else 0
+
+                await conn.execute(
+                    """INSERT INTO bookings
+                           (telegram_id, location, booking_date, time_slot, screenshot_path, price, booking_id)
+                       VALUES (?, ?, ?, ?, '', ?, ?)""",
+                    (0, location, date_str, slot_time, price, order_id),
+                )
+
+            await conn.execute("DELETE FROM pending_table WHERE temporary_order_id=?", (order_id,))
+            await conn.commit()
+            return {"status": "created"}
+        except Exception:
+            await conn.rollback()
+            logger.exception("confirm_pending_booking failed: order_id=%s", order_id)
+            raise
+
     @serialized_transaction
     async def create_pending(
         self,
