@@ -815,13 +815,14 @@ class Database:
         booking_date: str,
         time_slot: str,
         screenshot_path: str = "",
-        price: float = 0.0
+        price: float = 0.0,
+        booking_id: str | None = None
     ):
         sql = """
-        INSERT OR IGNORE INTO bookings (telegram_id, location, booking_date, time_slot, screenshot_path, price)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO bookings (telegram_id, location, booking_date, time_slot, screenshot_path, price, booking_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """
-        params = (telegram_id, location, booking_date, time_slot, screenshot_path, price)
+        params = (telegram_id, location, booking_date, time_slot, screenshot_path, price, booking_id)
         await self.execute(sql, parameters=params, commit=True)
 
 
