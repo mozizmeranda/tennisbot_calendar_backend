@@ -40,39 +40,7 @@ class Database:
         await self.connection.execute("PRAGMA foreign_keys = ON;")
         await self.connection.execute("PRAGMA busy_timeout = 5000;")
         # Безопасная миграция: добавляем поле role если его ещё нет
-        try:
-            await self.connection.execute(
-                "ALTER TABLE calendar_members ADD COLUMN role TEXT DEFAULT 'trainer'"
-            )
-            await self.connection.commit()
-        except Exception:
-            pass  # Колонка уже существует — игнорируем
-        # Миграции для расширенного календаря
-        for ddl in (
-            "ALTER TABLE recurring_events ADD COLUMN start_date TEXT",
-            "ALTER TABLE recurring_events ADD COLUMN end_date TEXT",
-        ):
-            try:
-                await self.connection.execute(ddl)
-                await self.connection.commit()
-            except Exception:
-                pass  # Колонка уже существует
-        try:
-            await self.connection.execute(
-                """CREATE TABLE IF NOT EXISTS recurring_event_overrides (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    recurring_event_id INTEGER NOT NULL,
-                    date TEXT NOT NULL,
-                    title VARCHAR(255) NOT NULL,
-                    created_by INTEGER,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE (recurring_event_id, date),
-                    FOREIGN KEY (recurring_event_id) REFERENCES recurring_events (id) ON DELETE CASCADE
-                )"""
-            )
-            await self.connection.commit()
-        except Exception:
-            logger.exception("create recurring_event_overrides failed")
+        
 
     async def _begin_immediate(self, conn) -> None:
         """Начинает транзакцию; если на общем соединении осталась «висячая» (например, после отмены запроса) — откатывает её."""
@@ -245,7 +213,7 @@ class Database:
     async def get_price(self, location: str, time_slot: str) -> Optional[int]:
         sql = "SELECT price FROM price WHERE location = ? AND time_slot = ?"
         result = await self.execute(sql, (location, time_slot), fetchone=True)
-        return result if result else None
+        return result[0] if result else None
 
     async def get_prices_by_location(self, location: str):
         sql = "SELECT * FROM price WHERE location = ?"
