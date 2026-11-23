@@ -74,6 +74,13 @@ class Database:
         except Exception:
             logger.exception("create recurring_event_overrides failed")
 
+    async def _begin_immediate(self, conn) -> None:
+        """Начинает транзакцию; если на общем соединении осталась «висячая» (например, после отмены запроса) — откатывает её."""
+        if conn.in_transaction:
+            logger.warning("Stale transaction detected before BEGIN IMMEDIATE - rolling back")
+            await conn.rollback()
+        await conn.execute("BEGIN IMMEDIATE")
+
     async def close(self):
         """Закрывает соединение"""
         if self.connection:
@@ -377,7 +384,7 @@ class Database:
         """
         conn = self.connection
         try:
-            await conn.execute("BEGIN IMMEDIATE")
+            await self._begin_immediate(conn)
             for slot in time_slots:
                 occupied, capacity = await self._slot_occupancy(location, booking_date, slot)
                 if occupied >= capacity:
@@ -405,7 +412,7 @@ class Database:
         """
         conn = self.connection
         try:
-            await conn.execute("BEGIN IMMEDIATE")
+            await self._begin_immediate(conn)
 
             async with conn.execute("SELECT 1 FROM bookings WHERE booking_id=? LIMIT 1", (order_id,)) as cur:
                 if await cur.fetchone():
@@ -490,7 +497,7 @@ class Database:
         max_capacity = calendar_row[0] if calendar_row else courts.get(location, 1)
 
         try:
-            await self.connection.execute("BEGIN IMMEDIATE")
+            await self._begin_immediate(self.connection)
 
             # 1. Активные холды в pending_table
             res_table = await self.execute(

@@ -97,7 +97,7 @@ async def send_photo_payment(
         )
 
         logger.info("Pending booking created and photo sent to admin for booking_id=%s", booking_id)
-        await db.execute("DELETE FROM pending_table WHERE temporary_order_id=?", (booking_id, ), commit=True)
+        await db.cancel_pending_by_order_id(booking_id)
         return {"success": True, "message": "Фото принято и обрабатывается"}
 
     except Exception as e:
