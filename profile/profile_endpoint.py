@@ -24,7 +24,7 @@ async def get_profile(telegram_id: int):
         "phone": rows['profile'][1],
         "bookings": []
     }
-    print(f"BOOKINGS: {rows["future_bookings"]}")
+    # print(f"BOOKINGS: {rows["future_bookings"]}")
     for row in rows["future_bookings"]:
         result["bookings"].append({
                 "date": row[1],
