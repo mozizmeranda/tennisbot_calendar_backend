@@ -47,6 +47,10 @@ class RecurringEventCreate(BaseModel):
     days_of_week: List[int]
     start_time: time
     end_time: time
+    # Первая дата действия серии (включительно). None = с сегодняшнего дня.
+    start_date: Optional[date] = None
+    # Последняя дата действия серии (включительно). None = бессрочно.
+    end_date: Optional[date] = None
 
     @model_validator(mode='after')
     def check_times(self) -> 'RecurringEventCreate':
@@ -58,6 +62,54 @@ class RecurringEventCreate(BaseModel):
         for day in self.days_of_week:
             if day < 0 or day > 6:
                 raise ValueError("days_of_week must be between 0 (Monday) and 6 (Sunday)")
+        if not self.days_of_week:
+            raise ValueError("days_of_week must not be empty")
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValueError("end_date must be >= start_date")
+        return self
+
+
+class ReservationCreate(BaseModel):
+    """Закрепление слота за человеком: создаёт одиночные события на каждую подходящую дату периода."""
+    title: str
+    days_of_week: List[int]
+    start_time: time
+    end_time: time
+    start_date: Optional[date] = None      # None = сегодня
+    end_date: Optional[date] = None        # если не задана — start_date + months
+    months: int = 1                        # используется, если end_date не задана
+    status: str = "confirmed"
+    skip_conflicts: bool = False           # True: заполненные даты пропускаются, остальные создаются
+
+    @model_validator(mode='after')
+    def check_all(self) -> 'ReservationCreate':
+        midnight = time_type(0, 0, 0)
+        if self.end_time != midnight and self.start_time >= self.end_time:
+            raise ValueError("start_time must be before end_time")
+        if not self.days_of_week:
+            raise ValueError("days_of_week must not be empty")
+        for day in self.days_of_week:
+            if day < 0 or day > 6:
+                raise ValueError("days_of_week must be between 0 (Monday) and 6 (Sunday)")
+        if self.months < 1 or self.months > 12:
+            raise ValueError("months must be between 1 and 12")
+        if self.status not in ("confirmed", "pending_payment"):
+            raise ValueError("Invalid status")
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValueError("end_date must be >= start_date")
+        return self
+
+
+class InstanceTitleUpdate(BaseModel):
+    """Смена названия одного конкретного слота серии (остальная серия не меняется)."""
+    date: date
+    title: str
+
+    @model_validator(mode='after')
+    def check_title(self) -> 'InstanceTitleUpdate':
+        self.title = self.title.strip()
+        if not self.title:
+            raise ValueError("title must not be empty")
         return self
 
 
@@ -88,6 +140,8 @@ class RecurringEventResponse(BaseModel):
     day_of_week: int
     start_time: time
     end_time: time
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
 
     class Config:
         from_attributes = True

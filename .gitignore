@@ -35,3 +35,4 @@ database/test_users.db
 
 .gitignore
 telegram_bot/admin.py
+CALENDAR_API_INSTRUCTION.md

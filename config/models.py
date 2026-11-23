@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Literal
+
 from datetime import date
 
 
@@ -44,3 +45,20 @@ class UpdateProfileBody(BaseModel):
     name: Optional[str] = Field(None, description="Новое имя пользователя")
     phone: Optional[str] = Field(None, description="Новый номер телефона")
 
+
+class SetActiveLocation(BaseModel):
+    is_active: bool
+    location: Literal["A", "B"]
+
+
+class GetPricesBody(BaseModel):
+    location: Literal["A", "B"]
+
+# class ReponseActiveLocations(BaseModel):
+#     active_locations: dict[str, dict[str, list[dict[str, str]]]]
+
+
+
+
+
+    

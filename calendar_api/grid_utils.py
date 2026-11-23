@@ -4,7 +4,7 @@
 Не импортируют database — безопасно использовать из любого модуля.
 """
 from datetime import date, timedelta
-from typing import List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 def _build_cancelled_pairs(cancelled_events: List[dict]) -> Set[Tuple[int, str]]:
@@ -24,14 +24,30 @@ def _build_cancelled_pairs(cancelled_events: List[dict]) -> Set[Tuple[int, str]]
     return pairs
 
 
+def _recurring_active_on(rec: dict, date_str: str) -> bool:
+    """Серия действует в дату, если date_str попадает в [start_date, end_date] (границы опциональны)."""
+    sd = rec.get("start_date")
+    ed = rec.get("end_date")
+    if sd and date_str < sd:
+        return False
+    if ed and date_str > ed:
+        return False
+    return True
+
+
 def _build_grid(
     single_rows: List[dict],
     cancelled_pairs: Set[Tuple[int, str]],
     recurring_rows: List[dict],
     from_date: date,
     to_date: date,
+    overrides: Optional[Dict[Tuple[int, str], str]] = None,
 ) -> List[dict]:
-    """Собирает сетку событий из одиночных + виртуальных повторяющихся."""
+    """
+    Собирает сетку событий из одиночных + виртуальных повторяющихся.
+    overrides — {(recurring_event_id, "YYYY-MM-DD"): title} — переименование конкретного слота серии.
+    """
+    overrides = overrides or {}
     grid = []
 
     for e in single_rows:
@@ -50,13 +66,20 @@ def _build_grid(
         weekday = current.weekday()
         date_str = current.isoformat()  # "YYYY-MM-DD"
         for re in recurring_rows:
-            if re["day_of_week"] == weekday and (re["id"], date_str) not in cancelled_pairs:
+            if (
+                re["day_of_week"] == weekday
+                and (re["id"], date_str) not in cancelled_pairs
+                and _recurring_active_on(re, date_str)
+            ):
                 # Если событие заканчивается в полночь — end дата следующего дня
                 end_date = (current + timedelta(days=1)) if re["end_time"] == "00:00:00" else current
+                override_title = overrides.get((re["id"], date_str))
                 grid.append({
                     "id": re["id"],
                     "type": "recurring_instance",
-                    "title": re["title"],
+                    "title": override_title if override_title else re["title"],
+                    "series_title": re["title"],
+                    "title_overridden": bool(override_title),
                     "start_datetime": f"{current} {re['start_time']}",
                     "end_datetime": f"{end_date} {re['end_time']}",
                     "status": "confirmed",

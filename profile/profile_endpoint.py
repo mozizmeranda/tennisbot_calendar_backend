@@ -20,18 +20,17 @@ async def get_profile(telegram_id: int):
         )
 
     result = {
-        "name": rows[0][0],
-        "phone": rows[0][1],
+        "name": rows['profile'][0],
+        "phone": rows['profile'][1],
         "bookings": []
     }
-
-    for row in rows:
-        if row[2] is not None:
-            result["bookings"].append({
-                "date": row[3],
-                "location": row[2],
+    print(f"BOOKINGS: {rows["future_bookings"]}")
+    for row in rows["future_bookings"]:
+        result["bookings"].append({
+                "date": row[1],
+                "location": row[0],
                 "telegram_id": telegram_id,
-                "time_slot": row[4]
+                "time_slot": row[2]
             })
 
     return JSONResponse(status_code=status.HTTP_200_OK, content=result)
@@ -61,3 +60,6 @@ async def update_profile(telegram_id: int, body: models.UpdateProfileBody):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"error": f"Ошибка при обновлении профиля: {str(e)}"}
         )
+
+
+

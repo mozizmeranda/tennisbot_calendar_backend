@@ -6,13 +6,17 @@ from typing import List, Optional
 from fastapi import APIRouter, Header, HTTPException, Query
 
 from database.database import db
-from calendar_api.helpers import require_calendar_access, _check_capacity, _check_recurring_capacity, _build_grid, _build_cancelled_pairs
+from calendar_api.helpers import (
+    require_calendar_access, _check_capacity, _check_recurring_capacity, _build_grid, _build_cancelled_pairs,
+    _find_conflict_dates, _dates_for_weekdays, _format_conflicts, MAX_RESERVATION_DAYS,
+)
 
 from config.calendar import CalendarResponse, CreateCalendar, CreateUser, CalendarMembers, MigrateGoogleCalendarRequest
 from config.event import (
     GridEventResponse,
     RecurringEventCreate,
     RecurringEventResponse,
+    ReservationCreate,
     SingleEventCreate,
     SingleEventResponse,
 )
@@ -102,8 +106,9 @@ async def get_events(
     )
     cancelled_pairs = _build_cancelled_pairs(cancelled)
     recurring = await db.get_recurring_events_for_calendar(calendar_id)
+    overrides = await db.get_overrides_for_calendar(calendar_id, from_date.isoformat(), to_date.isoformat())
 
-    return _build_grid(active, cancelled_pairs, recurring, from_date, to_date)
+    return _build_grid(active, cancelled_pairs, recurring, from_date, to_date, overrides)
 
 
 @router.post("/{calendar_id}/single-events", status_code=201)
@@ -139,7 +144,10 @@ async def create_recurring_event(
     event_in: RecurringEventCreate,
     telegram_id: int = Header(..., alias="X-Telegram-Id"),
 ):
-    """Создать повторяющееся событие (для одного или нескольких дней недели)."""
+    """
+    Создать повторяющееся событие (для одного или нескольких дней недели).
+    start_date / end_date (опц.) ограничивают период действия серии.
+    """
     calendar = await require_calendar_access(calendar_id, telegram_id)
 
     start_str = event_in.start_time.strftime("%H:%M:%S")
@@ -151,6 +159,8 @@ async def create_recurring_event(
         end_time=end_str,
         days_of_week=event_in.days_of_week,
         max_events=calendar["max_events_per_hour"],
+        start_date=event_in.start_date,
+        end_date=event_in.end_date,
     )
 
     events = await db.create_recurring_events_bulk(
@@ -160,8 +170,87 @@ async def create_recurring_event(
         days_of_week=event_in.days_of_week,
         start_time=start_str,
         end_time=end_str,
+        start_date=event_in.start_date.isoformat() if event_in.start_date else date.today().isoformat(),
+        end_date=event_in.end_date.isoformat() if event_in.end_date else None,
     )
     return events
+
+
+def _add_months(d: date, months: int) -> date:
+    from calendar import monthrange
+    m = d.month - 1 + months
+    y = d.year + m // 12
+    m = m % 12 + 1
+    return date(y, m, min(d.day, monthrange(y, m)[1]))
+
+
+@router.post("/{calendar_id}/reservations", status_code=201)
+async def create_reservation(
+    calendar_id: str,
+    body: ReservationCreate,
+    telegram_id: int = Header(..., alias="X-Telegram-Id"),
+):
+    """
+    Закрепить слот за человеком на период (например, на месяц).
+    Создаёт обычные одиночные события на каждую подходящую дату.
+    Период: start_date (по умолч. сегодня) .. end_date, либо start_date + months.
+    Если какие-то даты заняты: skip_conflicts=false -> 400 и ничего не создаётся;
+    skip_conflicts=true -> занятые даты пропускаются и возвращаются в "skipped".
+    """
+    calendar = await require_calendar_access(calendar_id, telegram_id)
+
+    first = body.start_date or date.today()
+    last = body.end_date or (_add_months(first, body.months) - timedelta(days=1))
+    if (last - first).days + 1 > MAX_RESERVATION_DAYS:
+        raise HTTPException(status_code=400, detail=f"Period too long: max {MAX_RESERVATION_DAYS} days")
+
+    start_str = body.start_time.strftime("%H:%M:%S")
+    end_str = body.end_time.strftime("%H:%M:%S")
+
+    dates = _dates_for_weekdays(first, last, body.days_of_week)
+    if not dates:
+        raise HTTPException(status_code=400, detail="No matching dates in the given period")
+
+    conflicts = await _find_conflict_dates(
+        calendar_id, dates, start_str, end_str, calendar["max_events_per_hour"]
+    )
+    if conflicts and not body.skip_conflicts:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Limit reached {_format_conflicts(conflicts, start_str)}: "
+                f"max {calendar['max_events_per_hour']} events/slot. "
+                f"Nothing was created. Use skip_conflicts=true to skip busy dates."
+            ),
+        )
+
+    conflict_set = set(conflicts)
+    intervals = []
+    for d in dates:
+        if d in conflict_set:
+            continue
+        end_day = d + timedelta(days=1) if end_str == "00:00:00" else d
+        intervals.append((f"{d} {start_str}", f"{end_day} {end_str}"))
+
+    created = []
+    if intervals:
+        created = await db.create_single_events_bulk(
+            calendar_id=calendar_id,
+            created_by=telegram_id,
+            title=body.title,
+            intervals=intervals,
+            status=body.status,
+        )
+        if not created:
+            raise HTTPException(status_code=500, detail="Failed to create reservation")
+
+    return {
+        "period": {"from": first.isoformat(), "to": last.isoformat()},
+        "created_count": len(created),
+        "skipped_count": len(conflicts),
+        "created": created,
+        "skipped": [d.isoformat() for d in conflicts],
+    }
 
 
 @router.post("")

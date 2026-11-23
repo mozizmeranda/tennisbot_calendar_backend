@@ -47,6 +47,32 @@ class Database:
             await self.connection.commit()
         except Exception:
             pass  # Колонка уже существует — игнорируем
+        # Миграции для расширенного календаря
+        for ddl in (
+            "ALTER TABLE recurring_events ADD COLUMN start_date TEXT",
+            "ALTER TABLE recurring_events ADD COLUMN end_date TEXT",
+        ):
+            try:
+                await self.connection.execute(ddl)
+                await self.connection.commit()
+            except Exception:
+                pass  # Колонка уже существует
+        try:
+            await self.connection.execute(
+                """CREATE TABLE IF NOT EXISTS recurring_event_overrides (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    recurring_event_id INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    created_by INTEGER,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (recurring_event_id, date),
+                    FOREIGN KEY (recurring_event_id) REFERENCES recurring_events (id) ON DELETE CASCADE
+                )"""
+            )
+            await self.connection.commit()
+        except Exception:
+            logger.exception("create recurring_event_overrides failed")
 
     async def close(self):
         """Закрывает соединение"""
@@ -151,21 +177,42 @@ class Database:
         params.append(telegram_id)
         await self.execute(sql, parameters=tuple(params), commit=True)
 
-    async def get_full_profile(self, telegram_id: int) -> List[tuple]:
-        sql = """
-           SELECT 
-               u.name, 
-               u.number,
-               b.location, 
-               b.booking_date, 
-               b.time_slot, 
-               b.screenshot_path
-           FROM users u
-           LEFT JOIN bookings b ON u.id = b.telegram_id
-           WHERE u.id = ?
-           """
-        params = (telegram_id,)
-        return await self.execute(sql, parameters=params, fetchall=True)
+    async def get_full_profile(self, telegram_id: int):
+        profile_sql = "SELECT name, number FROM users WHERE id=?"
+
+        bookings_sql = """
+            SELECT
+                location,
+                booking_date,
+                time_slot
+            FROM bookings
+            WHERE telegram_id = ?
+            AND datetime(
+                booking_date || ' ' ||
+                substr(time_slot, 7, 5)
+            ) > datetime('now', 'localtime')
+            ORDER BY booking_date, time_slot
+        """
+
+        profile = await self.execute(
+            profile_sql,
+            parameters=(telegram_id,),
+            fetchone=True
+        )
+
+        if not profile:
+            return None
+
+        bookings = await self.execute(
+            bookings_sql,
+            parameters=(telegram_id,),
+            fetchall=True
+        )
+
+        return {
+            "profile": profile,
+            "future_bookings": bookings
+        }
 
 
 
@@ -191,7 +238,12 @@ class Database:
     async def get_price(self, location: str, time_slot: str) -> Optional[int]:
         sql = "SELECT price FROM price WHERE location = ? AND time_slot = ?"
         result = await self.execute(sql, (location, time_slot), fetchone=True)
-        return result[0] if result else None
+        return result if result else None
+
+    async def get_prices_by_location(self, location: str):
+        sql = "SELECT * FROM price WHERE location = ?"
+        result = await self.execute(sql, (location,), fetchall=True)
+        return result if result else None
 
     @serialized_transaction
     async def update_price(self, location: str, time_slot: str, new_price: int):
@@ -282,7 +334,7 @@ class Database:
         n_recurring = 0
         weekday = datetime.strptime(booking_date, "%Y-%m-%d").weekday()
         recurring_rows = await self.execute(
-            "SELECT id, start_time, end_time FROM recurring_events WHERE calendar_id=? AND day_of_week=?",
+            "SELECT id, start_time, end_time, start_date, end_date FROM recurring_events WHERE calendar_id=? AND day_of_week=?",
             (location, weekday), fetchall=True,
         )
         if recurring_rows:
@@ -294,8 +346,10 @@ class Database:
             )
             cancelled_ids = {c[0] for c in cancelled_rows} if cancelled_rows else set()
             next_day = (datetime.strptime(booking_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-            for re_id, r_start, r_end in recurring_rows:
+            for re_id, r_start, r_end, r_sd, r_ed in recurring_rows:
                 if re_id in cancelled_ids:
+                    continue
+                if (r_sd and booking_date < r_sd) or (r_ed and booking_date > r_ed):
                     continue
                 r_start = r_start if len(r_start) == 8 else f"{r_start}:00"
                 r_end = r_end if len(r_end) == 8 else f"{r_end}:00"
@@ -491,7 +545,7 @@ class Database:
                     weekday = datetime.strptime(booking_date, "%Y-%m-%d").weekday()
                     recurring_rows = await self.execute(
                         """
-                        SELECT id, start_time, end_time FROM recurring_events
+                        SELECT id, start_time, end_time, start_date, end_date FROM recurring_events
                         WHERE calendar_id = ? AND day_of_week = ?
                         """,
                         (calendar_id, weekday),
@@ -515,6 +569,8 @@ class Database:
                         for re in recurring_rows:
                             re_id, r_start, r_end = re[0], re[1], re[2]
                             if re_id in cancelled_ids:
+                                continue
+                            if (re[3] and booking_date < re[3]) or (re[4] and booking_date > re[4]):
                                 continue
 
                             r_start_fmt = r_start if len(r_start) == 8 else f"{r_start}:00"
@@ -816,13 +872,14 @@ class Database:
         time_slot: str,
         screenshot_path: str = "",
         price: float = 0.0,
-        booking_id: str | None = None
+        booking_id: str | None = None,
+        calendar_id: int = 0
     ):
         sql = """
-        INSERT OR IGNORE INTO bookings (telegram_id, location, booking_date, time_slot, screenshot_path, price, booking_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO bookings (telegram_id, location, booking_date, time_slot, screenshot_path, price, booking_id, calendar_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
-        params = (telegram_id, location, booking_date, time_slot, screenshot_path, price, booking_id)
+        params = (telegram_id, location, booking_date, time_slot, screenshot_path, price, booking_id, calendar_id)
         await self.execute(sql, parameters=params, commit=True)
 
 
@@ -1143,7 +1200,7 @@ class Database:
                 placeholders = ", ".join("?" * len(days_of_week))
                 sql = f"""
                     SELECT id, calendar_id, created_by, title,
-                           day_of_week, start_time, end_time, created_at
+                           day_of_week, start_time, end_time, created_at, start_date, end_date
                     FROM recurring_events
                     WHERE calendar_id=? AND day_of_week IN ({placeholders})
                 """
@@ -1151,7 +1208,7 @@ class Database:
             else:
                 sql = """
                     SELECT id, calendar_id, created_by, title,
-                           day_of_week, start_time, end_time, created_at
+                           day_of_week, start_time, end_time, created_at, start_date, end_date
                     FROM recurring_events WHERE calendar_id=?
                 """
                 params = (calendar_id,)
@@ -1169,6 +1226,8 @@ class Database:
                     "start_time": r[5],
                     "end_time": r[6],
                     "created_at": r[7],
+                    "start_date": r[8],
+                    "end_date": r[9],
                 }
                 for r in rows
             ]
@@ -1179,7 +1238,7 @@ class Database:
     async def get_recurring_event(self, event_id: int) -> Optional[dict]:
         sql = """
             SELECT id, calendar_id, created_by, title,
-                   day_of_week, start_time, end_time, created_at
+                   day_of_week, start_time, end_time, created_at, start_date, end_date
             FROM recurring_events WHERE id=?
         """
         try:
@@ -1195,6 +1254,8 @@ class Database:
                 "start_time": row[5],
                 "end_time": row[6],
                 "created_at": row[7],
+                "start_date": row[8],
+                "end_date": row[9],
             }
         except Exception:
             logger.exception("get_recurring_event failed: event_id=%s", event_id)
@@ -1249,17 +1310,19 @@ class Database:
             days_of_week: List[int],
             start_time: str,
             end_time: str,
+            start_date: Optional[str] = None,
+            end_date: Optional[str] = None,
     ) -> List[dict]:
         """Создать события для нескольких дней недели в одном коммите."""
         sql = """
             INSERT INTO recurring_events
-                (calendar_id, created_by, title, day_of_week, start_time, end_time)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (calendar_id, created_by, title, day_of_week, start_time, end_time, start_date, end_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
         try:
             ids = []
             for day in days_of_week:
-                await self.connection.execute(sql, (calendar_id, created_by, title, day, start_time, end_time))
+                await self.connection.execute(sql, (calendar_id, created_by, title, day, start_time, end_time, start_date, end_date))
                 cursor = await self.connection.execute("SELECT last_insert_rowid()")
                 row = await cursor.fetchone()
                 ids.append(row[0])
@@ -1320,6 +1383,102 @@ class Database:
             logger.exception("cancel_recurring_instance failed: recurring_event_id=%s", recurring_event_id)
             return None
 
+
+    # ──────────────────────────────────────────────────────────────────────────
+    #  OVERRIDES (переименование одного слота серии) и ПАКЕТНЫЕ БРОНИ
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @serialized_transaction
+    async def set_instance_title_override(
+            self, recurring_event_id: int, date_str: str, title: str, created_by: Optional[int]
+    ) -> bool:
+        try:
+            await self.connection.execute(
+                """
+                INSERT INTO recurring_event_overrides (recurring_event_id, date, title, created_by)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(recurring_event_id, date) DO UPDATE SET title=excluded.title
+                """,
+                (recurring_event_id, date_str, title, created_by),
+            )
+            await self.connection.commit()
+            return True
+        except Exception:
+            await self.connection.rollback()
+            logger.exception("set_instance_title_override failed: id=%s date=%s", recurring_event_id, date_str)
+            return False
+
+    @serialized_transaction
+    async def delete_instance_override(self, recurring_event_id: int, date_str: str) -> bool:
+        """True если override существовал и удалён."""
+        try:
+            cursor = await self.connection.execute(
+                "DELETE FROM recurring_event_overrides WHERE recurring_event_id=? AND date=?",
+                (recurring_event_id, date_str),
+            )
+            await self.connection.commit()
+            return cursor.rowcount > 0
+        except Exception:
+            await self.connection.rollback()
+            logger.exception("delete_instance_override failed")
+            return False
+
+    async def get_overrides_for_calendar(self, calendar_id: str, from_date: str, to_date: str) -> dict:
+        """Возвращает {(recurring_event_id, 'YYYY-MM-DD'): title} за период."""
+        try:
+            rows = await self.execute(
+                """
+                SELECT o.recurring_event_id, o.date, o.title
+                FROM recurring_event_overrides o
+                JOIN recurring_events r ON r.id = o.recurring_event_id
+                WHERE r.calendar_id=? AND o.date BETWEEN ? AND ?
+                """,
+                parameters=(calendar_id, from_date, to_date),
+                fetchall=True,
+            )
+            return {(r[0], r[1]): r[2] for r in rows} if rows else {}
+        except Exception:
+            logger.exception("get_overrides_for_calendar failed: calendar_id=%s", calendar_id)
+            return {}
+
+    @serialized_transaction
+    async def create_single_events_bulk(
+            self,
+            calendar_id: str,
+            created_by: Optional[int],
+            title: str,
+            intervals: List[Tuple[str, str]],
+            status: str = "confirmed",
+    ) -> List[dict]:
+        """Создать много одиночных событий одним коммитом. intervals — [(start, end)] 'YYYY-MM-DD HH:MM:SS'."""
+        try:
+            if created_by:
+                await self.connection.execute(
+                    "INSERT OR IGNORE INTO calendar_users (telegram_id, username, full_name) VALUES (?, ?, ?)",
+                    (created_by, "", "User"),
+                )
+            else:
+                created_by = None
+            ids = []
+            for start_dt, end_dt in intervals:
+                cursor = await self.connection.execute(
+                    """INSERT INTO single_events
+                       (calendar_id, created_by, title, start_datetime, end_datetime, status, recurring_event_id)
+                       VALUES (?, ?, ?, ?, ?, ?, NULL)""",
+                    (calendar_id, created_by, title, start_dt, end_dt, status),
+                )
+                ids.append(cursor.lastrowid)
+            await self.connection.commit()
+            result = []
+            for i in ids:
+                ev = await self.get_single_event(i)
+                if ev:
+                    result.append(ev)
+            return result
+        except Exception:
+            await self.connection.rollback()
+            logger.exception("create_single_events_bulk failed: calendar_id=%s", calendar_id)
+            return []
 
     # ──────────────────────────────────────────────────────────────────────────
     #  STATS

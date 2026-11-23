@@ -21,6 +21,7 @@ import httpx
 
 from payment.router import router as payment_router
 from profile.profile_endpoint import profile_router
+from admin.admin_handler import router as admin_router
 from datetime import datetime, timedelta, timezone
 
 from telegram_bot.bot_app import dp, bot, bot_router
@@ -96,6 +97,7 @@ app.include_router(profile_router)
 app.include_router(bot_router)
 app.include_router(calendar_router)
 app.include_router(event_router)
+app.include_router(admin_router)
 
 
 app.add_middleware(
@@ -203,13 +205,6 @@ async def free_slots_endpoint(request: Request, body: models.FreeSlotsBody):
         "free-slots: location=%s date=%d-%02d-%02d",
         body.location, body.year, body.month, body.day,
     )
-
-    # calendar_id = await db.get_calendar_id(body.location)
-    # if not calendar_id:
-    #     return JSONResponse(
-    #         status_code=status.HTTP_400_BAD_REQUEST,
-    #         content={"message": f"Неизвестная локация: {body.location}"}
-    #     )
 
     try:
         result = await _get_free_slots_from_db(body.location, body.year, body.month, body.day)
@@ -375,30 +370,6 @@ async def get_full_price_handler(body: models.GetFullPriceBody):
         expires_at = (datetime.now() + timedelta(minutes=delta)).strftime('%Y-%m-%d %H:%M:%S')
         temporary_order_id = nanoid_generate()
 
-        # Слот quantity приходит от клиента для каждого слота.
-        # created_slots = []
-        # for slot, slot_quantity in time_slots.items():
-        #     db_resp = await db.create_pending(
-        #         slot_quantity, temporary_order_id, location, booking_date, slot, telegram_id, expires_at
-        #     )
-        #     if db_resp == 0:
-        #         # Слот занят — откатываем уже записанные холды по этому order_id
-        #         if created_slots:
-        #             await db.cancel_pending_by_order_id(temporary_order_id)
-        #             logger.warning(
-        #                 "Partial rollback: cancelled %d pending(s) for order_id=%s",
-        #                 len(created_slots), temporary_order_id,
-        #             )
-
-        #         logger.warning(
-        #             "Slot occupied: order_id=%s telegram_id=%s slot=%s",
-        #             temporary_order_id, telegram_id, slot,
-        #         )
-        #         return JSONResponse(
-        #             status_code=status.HTTP_409_CONFLICT,
-        #             content={"message": "Слоты уже успели занять к сожалению...."}
-        #         )
-        #     created_slots.append(slot)
         res = await db.create_pending_multi(
             temporary_order_id, location, booking_date, slot_keys, telegram_id, expires_at
         )

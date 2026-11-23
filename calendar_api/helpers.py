@@ -5,7 +5,7 @@
 """
 import logging
 from datetime import datetime, timedelta, date
-from typing import Optional, List, Set, Tuple
+from typing import Optional, List
 
 from fastapi import HTTPException
 
@@ -13,6 +13,11 @@ from database.database import db
 from calendar_api.grid_utils import _build_cancelled_pairs, _build_grid  # noqa: F401 — реэкспорт
 
 logger = logging.getLogger(__name__)
+
+# На сколько недель вперёд (от start_date) проверяем лимит при создании бессрочной серии
+RECURRING_CHECK_WEEKS = 8
+# Максимальный период для закрепления слота (пакетных броней)
+MAX_RESERVATION_DAYS = 366
 
 
 async def require_calendar_access(calendar_id: str, telegram_id: int) -> dict:
@@ -26,8 +31,45 @@ async def require_calendar_access(calendar_id: str, telegram_id: int) -> dict:
     return calendar
 
 
+async def _load_grid(calendar_id: str, from_date: date, to_date: date) -> List[dict]:
+    """Плоская сетка (одиночные + экземпляры серий) за период, с учётом start/end серий и отмен."""
+    from_str = f"{from_date} 00:00:00"
+    to_str = f"{to_date} 23:59:59"
+    active = await db.get_single_events_for_calendar(
+        calendar_id, from_str, to_str, statuses=["confirmed", "pending_payment"]
+    )
+    cancelled = await db.get_single_events_for_calendar(calendar_id, from_str, to_str, statuses=["cancelled"])
+    cancelled_pairs = _build_cancelled_pairs(cancelled)
+    recurring = await db.get_recurring_events_for_calendar(calendar_id)
+    return _build_grid(active, cancelled_pairs, recurring, from_date, to_date)
 
 
+def _slot_bounds(day: date, start_time: str, end_time: str):
+    """(start, end) datetime слота в конкретный день; end_time == 00:00:00 → полночь следующего дня."""
+    end_day = day + timedelta(days=1) if end_time == "00:00:00" else day
+    return (
+        datetime.fromisoformat(f"{day} {start_time}"),
+        datetime.fromisoformat(f"{end_day} {end_time}"),
+    )
+
+
+def _first_overflow_hour(grid: List[dict], start: datetime, end: datetime, max_events: int) -> Optional[datetime]:
+    """Первый часовой блок интервала, где уже занято >= max_events. None если места хватает."""
+    parsed = [
+        (datetime.fromisoformat(e["start_datetime"]), datetime.fromisoformat(e["end_datetime"]))
+        for e in grid
+    ]
+    current_hour = start.replace(minute=0, second=0, microsecond=0)
+    end_hour = end.replace(minute=0, second=0, microsecond=0)
+    if end.minute > 0 or end.second > 0:
+        end_hour += timedelta(hours=1)
+    while current_hour < end_hour:
+        block_end = current_hour + timedelta(hours=1)
+        count = sum(1 for s, e in parsed if s < block_end and e > current_hour)
+        if count + 1 > max_events:
+            return current_hour
+        current_hour += timedelta(hours=1)
+    return None
 
 
 async def _check_capacity(
@@ -40,67 +82,53 @@ async def _check_capacity(
     """Проверяет лимит событий в час. Бросает 400 если превышен."""
     start = datetime.fromisoformat(start_dt)
     end = datetime.fromisoformat(end_dt)
-    from_date = start.date()
-    to_date = end.date()
 
-    from_str = f"{from_date} 00:00:00"
-    to_str = f"{to_date} 23:59:59"
-
-    active = await db.get_single_events_for_calendar(
-        calendar_id, from_str, to_str, statuses=["confirmed", "pending_payment"]
-    )
-    cancelled = await db.get_single_events_for_calendar(
-        calendar_id, from_str, to_str, statuses=["cancelled"]
-    )
-    cancelled_pairs = _build_cancelled_pairs(cancelled)
-    recurring = await db.get_recurring_events_for_calendar(calendar_id)
-
-    # Строим плоскую сетку событий
-    grid = []
-    for e in active:
-        grid.append({
-            "type": "single",
-            "id": e["id"],
-            "start": e["start_datetime"],
-            "end": e["end_datetime"],
-        })
-
-    current = from_date
-    while current <= to_date:
-        weekday = current.weekday()
-        date_str = current.isoformat()
-        for re in recurring:
-            if re["day_of_week"] == weekday and (re["id"], date_str) not in cancelled_pairs:
-                grid.append({
-                    "type": "recurring_instance",
-                    "id": re["id"],
-                    "start": f"{current} {re['start_time']}",
-                    "end": f"{current + timedelta(days=1) if re['end_time'] == '00:00:00' else current} {re['end_time']}",
-                })
-        current += timedelta(days=1)
-
+    grid = await _load_grid(calendar_id, start.date(), end.date())
     if exclude_event_id is not None:
         grid = [e for e in grid if not (e["type"] == "single" and e["id"] == exclude_event_id)]
 
-    current_hour = start.replace(minute=0, second=0, microsecond=0)
-    end_hour = end.replace(minute=0, second=0, microsecond=0)
-    if end.minute > 0 or end.second > 0:
-        end_hour += timedelta(hours=1)
-
-    while current_hour < end_hour:
-        block_end = current_hour + timedelta(hours=1)
-        count = sum(
-            1 for e in grid
-            if datetime.fromisoformat(e["start"]) < block_end
-            and datetime.fromisoformat(e["end"]) > current_hour
+    hour = _first_overflow_hour(grid, start, end, max_events)
+    if hour is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Limit reached: max {max_events} events/hour at {hour.time().isoformat()}",
         )
-        if count + 1 > max_events:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Limit reached: max {max_events} events/hour at {current_hour.time().isoformat()}"
-            )
-        current_hour += timedelta(hours=1)
 
+
+async def _find_conflict_dates(
+    calendar_id: str,
+    dates: List[date],
+    start_time: str,
+    end_time: str,
+    max_events: int,
+) -> List[date]:
+    """Из списка дат возвращает те, где слот start_time-end_time не помещается по лимиту."""
+    if not dates:
+        return []
+    grid = await _load_grid(calendar_id, min(dates), max(dates) + timedelta(days=1))
+    conflicts = []
+    for d in dates:
+        s, e = _slot_bounds(d, start_time, end_time)
+        if _first_overflow_hour(grid, s, e, max_events) is not None:
+            conflicts.append(d)
+    return conflicts
+
+
+def _dates_for_weekdays(first: date, last: date, days_of_week: List[int]) -> List[date]:
+    days = set(days_of_week)
+    result = []
+    cur = first
+    while cur <= last:
+        if cur.weekday() in days:
+            result.append(cur)
+        cur += timedelta(days=1)
+    return result
+
+
+def _format_conflicts(dates: List[date], start_time: str) -> str:
+    shown = ", ".join(d.isoformat() for d in dates[:5])
+    more = f" (+{len(dates) - 5} more)" if len(dates) > 5 else ""
+    return f"at {start_time[:5]} on {shown}{more}"
 
 
 async def _check_recurring_capacity(
@@ -109,67 +137,26 @@ async def _check_recurring_capacity(
     end_time: str,
     days_of_week: List[int],
     max_events: int,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
 ):
     """
-    Checks capacity for a new recurring event against all existing events
-    (single_events + recurring_events) over the next 4 weeks.
-    Raises HTTPException 400 if limit is exceeded for any day_of_week.
+    Проверяет вместимость новой серии, начиная со start_date (по умолчанию сегодня),
+    на RECURRING_CHECK_WEEKS недель вперёд (или до end_date). Даты до start_date НЕ проверяются —
+    поэтому серия «с воскресенья через неделю» не блокируется событием в ближайшее воскресенье.
     """
-    from datetime import date as date_type
+    first = start_date or date.today()
+    last = first + timedelta(weeks=RECURRING_CHECK_WEEKS)
+    if end_date and end_date < last:
+        last = end_date
 
-    today = date_type.today()
-    look_ahead = today + timedelta(weeks=4)
-
-    from_str = f"{today} 00:00:00"
-    to_str = f"{look_ahead} 23:59:59"
-
-    active = await db.get_single_events_for_calendar(
-        calendar_id, from_str, to_str, statuses=["confirmed", "pending_payment"]
-    )
-    cancelled = await db.get_single_events_for_calendar(
-        calendar_id, from_str, to_str, statuses=["cancelled"]
-    )
-    cancelled_pairs = _build_cancelled_pairs(cancelled)
-    recurring = await db.get_recurring_events_for_calendar(calendar_id)
-
-    for target_day in days_of_week:
-        # Nearest date with the required weekday
-        days_ahead = (target_day - today.weekday()) % 7
-        check_date = today + timedelta(days=days_ahead)
-        date_str = check_date.isoformat()
-
-        grid = []
-
-        # Single events on this day
-        for e in active:
-            if e["start_datetime"][:10] == date_str:
-                grid.append({"start": e["start_datetime"], "end": e["end_datetime"]})
-
-        # Recurring instances on this day (excluding cancelled)
-        for re in recurring:
-            if re["day_of_week"] == target_day and (re["id"], date_str) not in cancelled_pairs:
-                end_date = check_date + timedelta(days=1) if re["end_time"] == "00:00:00" else check_date
-                grid.append({
-                    "start": f"{check_date} {re['start_time']}",
-                    "end": f"{end_date} {re['end_time']}",
-                })
-
-        # New slot datetime
-        new_start = datetime.fromisoformat(f"{check_date} {start_time}")
-        end_date_new = check_date + timedelta(days=1) if end_time == "00:00:00" else check_date
-        new_end = datetime.fromisoformat(f"{end_date_new} {end_time}")
-
-        overlap_count = sum(
-            1 for e in grid
-            if datetime.fromisoformat(e["start"]) < new_end
-            and datetime.fromisoformat(e["end"]) > new_start
+    dates = _dates_for_weekdays(first, last, days_of_week)
+    conflicts = await _find_conflict_dates(calendar_id, dates, start_time, end_time, max_events)
+    if conflicts:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Limit reached {_format_conflicts(conflicts, start_time)}: max {max_events} events/slot. "
+                f"Choose a later start_date or free the slot."
+            ),
         )
-
-        if overlap_count + 1 > max_events:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Limit reached for day_of_week={target_day} at {start_time[:5]}: "
-                    f"max {max_events} events/slot, found {overlap_count}"
-                )
-            )
