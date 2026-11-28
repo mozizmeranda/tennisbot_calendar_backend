@@ -46,22 +46,22 @@ texts = {
         "ru": """🎾 Добро пожаловать в систему бронирования теннисных кортов!
 
 Здесь вы можете забронировать корт на удобное время.
-У нас доступно 5 кортов в 2 локациях.""",
+У нас доступно 2 хард корта.""",
 
         "en": """🎾 Welcome to the tennis court booking system!
 
 Here you can book a court at a convenient time.
-We have 5 courts in 2 locations.""",
+We have 2 hard courts.""",
 
         "uz": """🎾 Tennis kortlarini bron qilish tizimiga xush kelibsiz!
 
 Bu yerda siz o'zingizga qulay vaqtda kort bron qilishingiz mumkin.
-Bizda 2 ta lokatsiyada 5 tа корт мавжуд.""",
+Bizda 2 tа xard корт мавжуд.""",
 
         "uz-cyr": """🎾 Теннис кортларини брон қилиш тизимига хуш келибсиз!
 
 Бу ерда сиз ўзингизга қулай вақтда корт брон қилишингиз мумкин.
-Бизда 2 та локацияда 5 та корт мавжуд."""
+Бизда 2 та хард корт мавжуд."""
     }
 }
 
