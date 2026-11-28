@@ -192,7 +192,7 @@ def get_documentation(request: Request):
 
 
 @app.post("/free-slots")
-@limiter.limit("5/minute", exempt_when=is_trusted_api_key)
+@limiter.limit("20/minute", exempt_when=is_trusted_api_key)
 async def free_slots_endpoint(request: Request, body: models.FreeSlotsBody):
     """
     Возвращает свободные слоты для бронирования корта на указанную дату.
